@@ -99,6 +99,11 @@ def api_start():
 
 @app.route("/api/pause", methods=["POST"])
 def api_pause():
+    # NOTE: SIGSTOP freezes the ffmpeg process mid-write. The MP4 file remains
+    # open and incomplete while paused. On most Linux systems this is safe for
+    # short pauses, but leaving a recording paused for extended periods risks
+    # file handle issues or partial-write corruption on some kernels/filesystems.
+    # Always stop the recording rather than pausing for more than a few minutes.
     with state_lock:
         if state["status"] != "recording":
             return jsonify({"error": "Not currently recording"}), 400
