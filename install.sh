@@ -107,6 +107,10 @@ with open(cfg_path) as f:
         if line.startswith('lxc.mount.entry'):
             # fields: ['lxc.mount.entry', '=', 'SOURCE', 'TARGET', ...]
             fields = line.split()
+            if len(fields) >= 4 and fields[2] == 'tmpfs':
+                # LXC 5.0 cannot mount tmpfs via relative target; drop the
+                # line entirely — the container creates these mount points itself
+                continue
             if len(fields) >= 4 and not fields[3].startswith('/'):
                 fields[3] = rootfs + '/' + fields[3]
                 line = ' '.join(fields) + '\n'
