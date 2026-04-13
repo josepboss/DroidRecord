@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DroidRecord</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0e1117;
+      --surface: #161b22;
+      --border: #30363d;
+      --accent: #238636;
+      --accent-hover: #2ea043;
+      --danger: #da3633;
+      --danger-hover: #f85149;
+      --warn: #d29922;
+      --warn-hover: #e3b341;
+      --blue: #1f6feb;
+      --blue-hover: #388bfd;
+      --text: #c9d1d9;
+      --text-muted: #8b949e;
+      --red-dot: #f85149;
+      --radius: 8px;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 24px 16px;
+    }
+
+    header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 32px;
+    }
+
+    header h1 {
+      font-size: 1.6rem;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+    }
+
+    header h1 span {
+      color: var(--accent-hover);
+    }
+
+    .badge {
+      font-size: 0.7rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      padding: 3px 8px;
+      border-radius: 20px;
+      color: var(--text-muted);
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      margin-bottom: 20px;
+    }
+
+    .card h2 {
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text-muted);
+      margin-bottom: 16px;
+      font-weight: 600;
+    }
+
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .status-indicator {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 1rem;
+      font-weight: 600;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--text-muted);
+      flex-shrink: 0;
+    }
+
+    .dot.recording {
+      background: var(--red-dot);
+      animation: pulse 1.2s ease-in-out infinite;
+    }
+
+    .dot.paused {
+      background: var(--warn);
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.85); }
+    }
+
+    .timer {
+      font-size: 2rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 2px;
+      color: var(--text);
+      margin: 12px 0;
+    }
+
+    .current-file {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      font-family: monospace;
+      margin-bottom: 4px;
+    }
+
+    .controls {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 16px;
+    }
+
+    button {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 9px 18px;
+      border: none;
+      border-radius: var(--radius);
+      font-size: 0.88rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s, opacity 0.15s;
+    }
+
+    button:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+
+    .btn-start  { background: var(--accent);  color: #fff; }
+    .btn-start:hover:not(:disabled)  { background: var(--accent-hover); }
+
+    .btn-pause  { background: var(--warn);    color: #000; }
+    .btn-pause:hover:not(:disabled)  { background: var(--warn-hover); }
+
+    .btn-resume { background: var(--blue);    color: #fff; }
+    .btn-resume:hover:not(:disabled) { background: var(--blue-hover); }
+
+    .btn-stop   { background: var(--danger);  color: #fff; }
+    .btn-stop:hover:not(:disabled)   { background: var(--danger-hover); }
+
+    .btn-upload { background: var(--blue);    color: #fff; font-size: 0.78rem; padding: 6px 12px; }
+    .btn-upload:hover:not(:disabled) { background: var(--blue-hover); }
+
+    .btn-delete { background: transparent; border: 1px solid var(--danger); color: var(--danger); font-size: 0.78rem; padding: 6px 12px; }
+    .btn-delete:hover:not(:disabled) { background: var(--danger); color: #fff; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+    }
+
+    th {
+      text-align: left;
+      color: var(--text-muted);
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      border-bottom: 1px solid var(--border);
+      padding: 8px 10px;
+    }
+
+    td {
+      padding: 10px 10px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+
+    tr:last-child td { border-bottom: none; }
+
+    td.filename {
+      font-family: monospace;
+      font-size: 0.8rem;
+      color: var(--text);
+      word-break: break-all;
+    }
+
+    td.actions {
+      display: flex;
+      gap: 6px;
+      justify-content: flex-end;
+    }
+
+    .empty-state {
+      text-align: center;
+      color: var(--text-muted);
+      padding: 32px 0;
+      font-size: 0.88rem;
+    }
+
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px 18px;
+      font-size: 0.85rem;
+      color: var(--text);
+      box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+      z-index: 9999;
+      opacity: 0;
+      transform: translateY(8px);
+      transition: opacity 0.2s, transform 0.2s;
+      pointer-events: none;
+      max-width: 320px;
+    }
+
+    .toast.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .toast.success { border-color: var(--accent); }
+    .toast.error   { border-color: var(--danger); }
+    .toast.info    { border-color: var(--blue); }
+
+    .spinner {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(255,255,255,0.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      vertical-align: middle;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Droid<span>Record</span></h1>
+  <div class="badge">VPS Screen Recorder</div>
+</header>
+
+<div class="card">
+  <h2>Recording Control</h2>
+
+  <div class="status-row">
+    <div class="status-indicator">
+      <div class="dot" id="statusDot"></div>
+      <span id="statusText">Idle</span>
+    </div>
+  </div>
+
+  <div class="timer" id="timer">00:00:00</div>
+  <div class="current-file" id="currentFile"></div>
+
+  <div class="controls">
+    <button class="btn-start"  id="btnStart"  onclick="startRecording()">&#9654; Start</button>
+    <button class="btn-pause"  id="btnPause"  onclick="pauseRecording()" disabled>&#9646;&#9646; Pause</button>
+    <button class="btn-resume" id="btnResume" onclick="resumeRecording()" disabled>&#9654; Resume</button>
+    <button class="btn-stop"   id="btnStop"   onclick="stopRecording()"  disabled>&#9632; Stop</button>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Saved Recordings</h2>
+  <div id="recordingsList">
+    <div class="empty-state">Loading...</div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+  let timerInterval = null;
+  let elapsedSeconds = 0;
+  let currentStatus = "idle";
+
+  function formatTime(secs) {
+    const h = Math.floor(secs / 3600).toString().padStart(2, "0");
+    const m = Math.floor((secs % 3600) / 60).toString().padStart(2, "0");
+    const s = (secs % 60).toString().padStart(2, "0");
+    return `${h}:${m}:${s}`;
+  }
+
+  function showToast(msg, type = "info") {
+    const t = document.getElementById("toast");
+    t.textContent = msg;
+    t.className = `toast ${type} show`;
+    clearTimeout(t._timeout);
+    t._timeout = setTimeout(() => { t.className = "toast"; }, 3500);
+  }
+
+  function applyStatus(data) {
+    const { status, elapsed, current_file } = data;
+    currentStatus = status;
+    elapsedSeconds = elapsed;
+
+    const dot      = document.getElementById("statusDot");
+    const statusTx = document.getElementById("statusText");
+    const btnStart  = document.getElementById("btnStart");
+    const btnPause  = document.getElementById("btnPause");
+    const btnResume = document.getElementById("btnResume");
+    const btnStop   = document.getElementById("btnStop");
+    const fileEl    = document.getElementById("currentFile");
+
+    dot.className = "dot" + (status === "recording" ? " recording" : status === "paused" ? " paused" : "");
+    statusTx.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+    fileEl.textContent = current_file ? "File: " + current_file : "";
+
+    btnStart.disabled  = status !== "idle";
+    btnPause.disabled  = status !== "recording";
+    btnResume.disabled = status !== "paused";
+    btnStop.disabled   = status === "idle";
+
+    document.getElementById("timer").textContent = formatTime(elapsedSeconds);
+
+    if (status === "recording") {
+      if (!timerInterval) {
+        timerInterval = setInterval(() => {
+          elapsedSeconds++;
+          document.getElementById("timer").textContent = formatTime(elapsedSeconds);
+        }, 1000);
+      }
+    } else {
+      clearInterval(timerInterval);
+      timerInterval = null;
+    }
+  }
+
+  async function pollStatus() {
+    try {
+      const res = await fetch("/api/status");
+      const data = await res.json();
+      applyStatus(data);
+    } catch (e) {}
+  }
+
+  async function startRecording() {
+    setLoading("btnStart", true);
+    try {
+      const res = await fetch("/api/start", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) { showToast(data.error || "Failed to start", "error"); return; }
+      applyStatus({ status: "recording", elapsed: 0, current_file: data.file });
+      showToast("Recording started", "success");
+    } catch (e) { showToast("Request failed", "error"); }
+    finally { setLoading("btnStart", false); }
+  }
+
+  async function pauseRecording() {
+    setLoading("btnPause", true);
+    try {
+      const res = await fetch("/api/pause", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) { showToast(data.error || "Failed to pause", "error"); return; }
+      applyStatus({ status: "paused", elapsed: elapsedSeconds, current_file: document.getElementById("currentFile").textContent.replace("File: ","") });
+      showToast("Recording paused", "info");
+    } catch (e) { showToast("Request failed", "error"); }
+    finally { setLoading("btnPause", false); }
+  }
+
+  async function resumeRecording() {
+    setLoading("btnResume", true);
+    try {
+      const res = await fetch("/api/resume", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) { showToast(data.error || "Failed to resume", "error"); return; }
+      applyStatus({ status: "recording", elapsed: elapsedSeconds, current_file: document.getElementById("currentFile").textContent.replace("File: ","") });
+      showToast("Recording resumed", "success");
+    } catch (e) { showToast("Request failed", "error"); }
+    finally { setLoading("btnResume", false); }
+  }
+
+  async function stopRecording() {
+    if (!confirm("Stop and finalize the current recording?")) return;
+    setLoading("btnStop", true);
+    try {
+      const res = await fetch("/api/stop", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) { showToast(data.error || "Failed to stop", "error"); return; }
+      applyStatus({ status: "idle", elapsed: 0, current_file: null });
+      showToast(`Saved: ${data.saved_file || "recording"}`, "success");
+      loadRecordings();
+    } catch (e) { showToast("Request failed", "error"); }
+    finally { setLoading("btnStop", false); }
+  }
+
+  async function uploadRecording(filename, btn) {
+    if (!confirm(`Upload "${filename}" to Google Drive and delete locally?`)) return;
+    const orig = btn.innerHTML;
+    btn.innerHTML = '<span class="spinner"></span> Uploading...';
+    btn.disabled = true;
+    try {
+      const res = await fetch(`/api/upload/${encodeURIComponent(filename)}`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) { showToast(data.error || "Upload failed", "error"); btn.innerHTML = orig; btn.disabled = false; return; }
+      showToast(`Uploaded & deleted: ${filename}`, "success");
+      loadRecordings();
+    } catch (e) { showToast("Request failed", "error"); btn.innerHTML = orig; btn.disabled = false; }
+  }
+
+  async function deleteRecording(filename, btn) {
+    if (!confirm(`Permanently delete "${filename}"?`)) return;
+    const orig = btn.innerHTML;
+    btn.innerHTML = "Deleting...";
+    btn.disabled = true;
+    try {
+      const res = await fetch(`/api/delete/${encodeURIComponent(filename)}`, { method: "DELETE" });
+      const data = await res.json();
+      if (!res.ok) { showToast(data.error || "Delete failed", "error"); btn.innerHTML = orig; btn.disabled = false; return; }
+      showToast(`Deleted: ${filename}`, "info");
+      loadRecordings();
+    } catch (e) { showToast("Request failed", "error"); btn.innerHTML = orig; btn.disabled = false; }
+  }
+
+  async function loadRecordings() {
+    try {
+      const res = await fetch("/api/recordings");
+      const data = await res.json();
+      const container = document.getElementById("recordingsList");
+
+      if (!data.recordings || data.recordings.length === 0) {
+        container.innerHTML = '<div class="empty-state">No recordings yet. Start one above.</div>';
+        return;
+      }
+
+      let html = `<table>
+        <thead>
+          <tr>
+            <th>Filename</th>
+            <th>Size</th>
+            <th>Date</th>
+            <th style="text-align:right">Actions</th>
+          </tr>
+        </thead>
+        <tbody>`;
+
+      for (const r of data.recordings) {
+        const encName = r.filename.replace(/"/g, "&quot;");
+        html += `<tr>
+          <td class="filename">${escHtml(r.filename)}</td>
+          <td>${r.size_mb} MB</td>
+          <td>${escHtml(r.modified)}</td>
+          <td class="actions">
+            <button class="btn-upload" onclick="uploadRecording('${encName}', this)">&#8679; Upload</button>
+            <button class="btn-delete" onclick="deleteRecording('${encName}', this)">&#128465; Delete</button>
+          </td>
+        </tr>`;
+      }
+
+      html += `</tbody></table>`;
+      container.innerHTML = html;
+    } catch (e) {
+      document.getElementById("recordingsList").innerHTML = '<div class="empty-state">Failed to load recordings.</div>';
+    }
+  }
+
+  function escHtml(str) {
+    return str.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  }
+
+  function setLoading(id, loading) {
+    const btn = document.getElementById(id);
+    if (!btn) return;
+    btn.disabled = loading;
+  }
+
+  pollStatus();
+  setInterval(pollStatus, 5000);
+  loadRecordings();
+  setInterval(loadRecordings, 15000);
+</script>
+</body>
+</html>
