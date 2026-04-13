@@ -19,6 +19,8 @@
       --warn-hover: #e3b341;
       --blue: #1f6feb;
       --blue-hover: #388bfd;
+      --purple: #8957e5;
+      --purple-hover: #a371f7;
       --text: #c9d1d9;
       --text-muted: #8b949e;
       --red-dot: #f85149;
@@ -31,13 +33,15 @@
       color: var(--text);
       min-height: 100vh;
       padding: 24px 16px;
+      max-width: 860px;
+      margin: 0 auto;
     }
 
     header {
       display: flex;
       align-items: center;
       gap: 12px;
-      margin-bottom: 32px;
+      margin-bottom: 28px;
     }
 
     header h1 {
@@ -46,9 +50,7 @@
       letter-spacing: -0.5px;
     }
 
-    header h1 span {
-      color: var(--accent-hover);
-    }
+    header h1 span { color: var(--accent-hover); }
 
     .badge {
       font-size: 0.7rem;
@@ -66,19 +68,65 @@
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: var(--radius);
-      padding: 24px;
-      margin-bottom: 20px;
+      padding: 22px 24px;
+      margin-bottom: 18px;
     }
 
     .card h2 {
-      font-size: 0.85rem;
+      font-size: 0.78rem;
       text-transform: uppercase;
       letter-spacing: 1px;
       color: var(--text-muted);
-      margin-bottom: 16px;
-      font-weight: 600;
+      margin-bottom: 14px;
+      font-weight: 700;
     }
 
+    /* Waydroid status row */
+    .wd-row {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      flex-wrap: wrap;
+    }
+
+    .wd-status-group {
+      display: flex;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+
+    .wd-pill {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.82rem;
+      color: var(--text-muted);
+    }
+
+    .wd-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); flex-shrink: 0; }
+    .wd-pill .dot.active { background: var(--accent-hover); }
+    .wd-pill .label { color: var(--text-muted); margin-right: 2px; }
+    .wd-pill .value { color: var(--text); font-weight: 600; }
+
+    .wd-controls { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+
+    .wd-log {
+      margin-top: 12px;
+      font-size: 0.75rem;
+      font-family: monospace;
+      color: var(--text-muted);
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 10px;
+      max-height: 80px;
+      overflow-y: auto;
+      display: none;
+    }
+    .wd-log.visible { display: block; }
+    .wd-log p { margin: 1px 0; }
+
+    /* Recording controls */
     .status-row {
       display: flex;
       align-items: center;
@@ -107,9 +155,7 @@
       animation: pulse 1.2s ease-in-out infinite;
     }
 
-    .dot.paused {
-      background: var(--warn);
-    }
+    .dot.paused { background: var(--warn); }
 
     @keyframes pulse {
       0%, 100% { opacity: 1; transform: scale(1); }
@@ -122,7 +168,7 @@
       font-variant-numeric: tabular-nums;
       letter-spacing: 2px;
       color: var(--text);
-      margin: 12px 0;
+      margin: 10px 0;
     }
 
     .current-file {
@@ -136,7 +182,7 @@
       display: flex;
       gap: 10px;
       flex-wrap: wrap;
-      margin-top: 16px;
+      margin-top: 14px;
     }
 
     button {
@@ -152,10 +198,7 @@
       transition: background 0.15s, opacity 0.15s;
     }
 
-    button:disabled {
-      opacity: 0.35;
-      cursor: not-allowed;
-    }
+    button:disabled { opacity: 0.35; cursor: not-allowed; }
 
     .btn-start  { background: var(--accent);  color: #fff; }
     .btn-start:hover:not(:disabled)  { background: var(--accent-hover); }
@@ -175,6 +218,12 @@
     .btn-delete { background: transparent; border: 1px solid var(--danger); color: var(--danger); font-size: 0.78rem; padding: 6px 12px; }
     .btn-delete:hover:not(:disabled) { background: var(--danger); color: #fff; }
 
+    .btn-wd-start { background: var(--purple); color: #fff; }
+    .btn-wd-start:hover:not(:disabled) { background: var(--purple-hover); }
+
+    .btn-wd-stop { background: transparent; border: 1px solid var(--purple); color: var(--purple); }
+    .btn-wd-stop:hover:not(:disabled) { background: var(--purple); color: #fff; }
+
     table {
       width: 100%;
       border-collapse: collapse;
@@ -192,7 +241,7 @@
     }
 
     td {
-      padding: 10px 10px;
+      padding: 10px;
       border-bottom: 1px solid var(--border);
       vertical-align: middle;
     }
@@ -235,14 +284,10 @@
       transform: translateY(8px);
       transition: opacity 0.2s, transform 0.2s;
       pointer-events: none;
-      max-width: 320px;
+      max-width: 340px;
     }
 
-    .toast.show {
-      opacity: 1;
-      transform: translateY(0);
-    }
-
+    .toast.show { opacity: 1; transform: translateY(0); }
     .toast.success { border-color: var(--accent); }
     .toast.error   { border-color: var(--danger); }
     .toast.info    { border-color: var(--blue); }
@@ -258,6 +303,11 @@
       vertical-align: middle;
     }
 
+    .spinner.dark {
+      border-color: rgba(0,0,0,0.2);
+      border-top-color: #000;
+    }
+
     @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
@@ -268,6 +318,34 @@
   <div class="badge">VPS Screen Recorder</div>
 </header>
 
+<!-- ── Waydroid Control ──────────────────────────────────────────────────── -->
+<div class="card">
+  <h2>Android Emulator (Waydroid)</h2>
+
+  <div class="wd-row">
+    <div class="wd-status-group">
+      <div class="wd-pill">
+        <div class="dot" id="wdContainerDot"></div>
+        <span class="label">Container:</span>
+        <span class="value" id="wdContainerText">checking...</span>
+      </div>
+      <div class="wd-pill">
+        <div class="dot" id="wdSessionDot"></div>
+        <span class="label">Session:</span>
+        <span class="value" id="wdSessionText">checking...</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="wd-controls">
+    <button class="btn-wd-start" id="btnWdStart" onclick="waydroidStart()">&#9654; Start Emulator</button>
+    <button class="btn-wd-stop"  id="btnWdStop"  onclick="waydroidStop()">&#9632; Stop Emulator</button>
+  </div>
+
+  <div class="wd-log" id="wdLog"></div>
+</div>
+
+<!-- ── Recording Control ─────────────────────────────────────────────────── -->
 <div class="card">
   <h2>Recording Control</h2>
 
@@ -289,6 +367,7 @@
   </div>
 </div>
 
+<!-- ── Saved Recordings ──────────────────────────────────────────────────── -->
 <div class="card">
   <h2>Saved Recordings</h2>
   <div id="recordingsList">
@@ -299,6 +378,8 @@
 <div class="toast" id="toast"></div>
 
 <script>
+  // ── helpers ──────────────────────────────────────────────────────────────
+
   let timerInterval = null;
   let elapsedSeconds = 0;
   let currentStatus = "idle";
@@ -315,16 +396,111 @@
     t.textContent = msg;
     t.className = `toast ${type} show`;
     clearTimeout(t._timeout);
-    t._timeout = setTimeout(() => { t.className = "toast"; }, 3500);
+    t._timeout = setTimeout(() => { t.className = "toast"; }, 4000);
   }
+
+  function escHtml(str) {
+    return str.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  }
+
+  // ── Waydroid ──────────────────────────────────────────────────────────────
+
+  function applyWaydroidStatus(data) {
+    const cDot  = document.getElementById("wdContainerDot");
+    const cText = document.getElementById("wdContainerText");
+    const sDot  = document.getElementById("wdSessionDot");
+    const sText = document.getElementById("wdSessionText");
+
+    const containerUp = data.container === "running";
+    const sessionUp   = data.session   === "running";
+
+    cDot.className  = "dot" + (containerUp ? " active" : "");
+    cText.textContent = containerUp ? "running" : "stopped";
+
+    sDot.className  = "dot" + (sessionUp ? " active" : "");
+    sText.textContent = sessionUp ? "running" : "stopped";
+
+    document.getElementById("btnWdStart").disabled = containerUp;
+    document.getElementById("btnWdStop").disabled  = !containerUp;
+  }
+
+  async function pollWaydroid() {
+    try {
+      const res  = await fetch("/api/waydroid/status");
+      const data = await res.json();
+      applyWaydroidStatus(data);
+    } catch (e) {}
+  }
+
+  function showWdLog(messages) {
+    const log = document.getElementById("wdLog");
+    if (!messages || messages.length === 0) return;
+    log.innerHTML = messages.map(m => `<p>${escHtml(m)}</p>`).join("");
+    log.classList.add("visible");
+    setTimeout(() => log.classList.remove("visible"), 8000);
+  }
+
+  async function waydroidStart() {
+    const btn = document.getElementById("btnWdStart");
+    btn.innerHTML = '<span class="spinner"></span> Starting...';
+    btn.disabled = true;
+
+    try {
+      const res  = await fetch("/api/waydroid/start", { method: "POST" });
+      const data = await res.json();
+
+      if (!res.ok) {
+        showToast(data.error || "Failed to start Waydroid", "error");
+        showWdLog(data.messages);
+        return;
+      }
+
+      showToast("Waydroid started — emulator launching on virtual display", "success");
+      showWdLog(data.messages);
+      await pollWaydroid();
+    } catch (e) {
+      showToast("Request failed", "error");
+    } finally {
+      btn.innerHTML = "&#9654; Start Emulator";
+      await pollWaydroid();
+    }
+  }
+
+  async function waydroidStop() {
+    if (!confirm("Stop the Waydroid emulator?")) return;
+    const btn = document.getElementById("btnWdStop");
+    btn.innerHTML = '<span class="spinner"></span> Stopping...';
+    btn.disabled = true;
+
+    try {
+      const res  = await fetch("/api/waydroid/stop", { method: "POST" });
+      const data = await res.json();
+
+      if (!res.ok) {
+        showToast(data.error || "Failed to stop Waydroid", "error");
+        showWdLog(data.messages);
+        return;
+      }
+
+      showToast("Waydroid stopped", "info");
+      showWdLog(data.messages);
+    } catch (e) {
+      showToast("Request failed", "error");
+    } finally {
+      btn.innerHTML = "&#9632; Stop Emulator";
+      await pollWaydroid();
+    }
+  }
+
+  // ── Recording ─────────────────────────────────────────────────────────────
 
   function applyStatus(data) {
     const { status, elapsed, current_file } = data;
     currentStatus = status;
     elapsedSeconds = elapsed;
 
-    const dot      = document.getElementById("statusDot");
-    const statusTx = document.getElementById("statusText");
+    const dot       = document.getElementById("statusDot");
+    const statusTx  = document.getElementById("statusText");
     const btnStart  = document.getElementById("btnStart");
     const btnPause  = document.getElementById("btnPause");
     const btnResume = document.getElementById("btnResume");
@@ -357,61 +533,65 @@
 
   async function pollStatus() {
     try {
-      const res = await fetch("/api/status");
+      const res  = await fetch("/api/status");
       const data = await res.json();
       applyStatus(data);
     } catch (e) {}
   }
 
   async function startRecording() {
-    setLoading("btnStart", true);
+    document.getElementById("btnStart").disabled = true;
     try {
-      const res = await fetch("/api/start", { method: "POST" });
+      const res  = await fetch("/api/start", { method: "POST" });
       const data = await res.json();
       if (!res.ok) { showToast(data.error || "Failed to start", "error"); return; }
       applyStatus({ status: "recording", elapsed: 0, current_file: data.file });
       showToast("Recording started", "success");
     } catch (e) { showToast("Request failed", "error"); }
-    finally { setLoading("btnStart", false); }
+    finally { document.getElementById("btnStart").disabled = false; }
   }
 
   async function pauseRecording() {
-    setLoading("btnPause", true);
+    document.getElementById("btnPause").disabled = true;
     try {
-      const res = await fetch("/api/pause", { method: "POST" });
+      const res  = await fetch("/api/pause", { method: "POST" });
       const data = await res.json();
       if (!res.ok) { showToast(data.error || "Failed to pause", "error"); return; }
-      applyStatus({ status: "paused", elapsed: elapsedSeconds, current_file: document.getElementById("currentFile").textContent.replace("File: ","") });
+      const cf = document.getElementById("currentFile").textContent.replace("File: ", "");
+      applyStatus({ status: "paused", elapsed: elapsedSeconds, current_file: cf });
       showToast("Recording paused", "info");
     } catch (e) { showToast("Request failed", "error"); }
-    finally { setLoading("btnPause", false); }
+    finally { document.getElementById("btnPause").disabled = false; }
   }
 
   async function resumeRecording() {
-    setLoading("btnResume", true);
+    document.getElementById("btnResume").disabled = true;
     try {
-      const res = await fetch("/api/resume", { method: "POST" });
+      const res  = await fetch("/api/resume", { method: "POST" });
       const data = await res.json();
       if (!res.ok) { showToast(data.error || "Failed to resume", "error"); return; }
-      applyStatus({ status: "recording", elapsed: elapsedSeconds, current_file: document.getElementById("currentFile").textContent.replace("File: ","") });
+      const cf = document.getElementById("currentFile").textContent.replace("File: ", "");
+      applyStatus({ status: "recording", elapsed: elapsedSeconds, current_file: cf });
       showToast("Recording resumed", "success");
     } catch (e) { showToast("Request failed", "error"); }
-    finally { setLoading("btnResume", false); }
+    finally { document.getElementById("btnResume").disabled = false; }
   }
 
   async function stopRecording() {
     if (!confirm("Stop and finalize the current recording?")) return;
-    setLoading("btnStop", true);
+    document.getElementById("btnStop").disabled = true;
     try {
-      const res = await fetch("/api/stop", { method: "POST" });
+      const res  = await fetch("/api/stop", { method: "POST" });
       const data = await res.json();
       if (!res.ok) { showToast(data.error || "Failed to stop", "error"); return; }
       applyStatus({ status: "idle", elapsed: 0, current_file: null });
       showToast(`Saved: ${data.saved_file || "recording"}`, "success");
       loadRecordings();
     } catch (e) { showToast("Request failed", "error"); }
-    finally { setLoading("btnStop", false); }
+    finally { document.getElementById("btnStop").disabled = false; }
   }
+
+  // ── Recordings list ───────────────────────────────────────────────────────
 
   async function uploadRecording(filename, btn) {
     if (!confirm(`Upload "${filename}" to Google Drive and delete locally?`)) return;
@@ -419,7 +599,7 @@
     btn.innerHTML = '<span class="spinner"></span> Uploading...';
     btn.disabled = true;
     try {
-      const res = await fetch(`/api/upload/${encodeURIComponent(filename)}`, { method: "POST" });
+      const res  = await fetch(`/api/upload/${encodeURIComponent(filename)}`, { method: "POST" });
       const data = await res.json();
       if (!res.ok) { showToast(data.error || "Upload failed", "error"); btn.innerHTML = orig; btn.disabled = false; return; }
       showToast(`Uploaded & deleted: ${filename}`, "success");
@@ -433,7 +613,7 @@
     btn.innerHTML = "Deleting...";
     btn.disabled = true;
     try {
-      const res = await fetch(`/api/delete/${encodeURIComponent(filename)}`, { method: "DELETE" });
+      const res  = await fetch(`/api/delete/${encodeURIComponent(filename)}`, { method: "DELETE" });
       const data = await res.json();
       if (!res.ok) { showToast(data.error || "Delete failed", "error"); btn.innerHTML = orig; btn.disabled = false; return; }
       showToast(`Deleted: ${filename}`, "info");
@@ -443,7 +623,7 @@
 
   async function loadRecordings() {
     try {
-      const res = await fetch("/api/recordings");
+      const res  = await fetch("/api/recordings");
       const data = await res.json();
       const container = document.getElementById("recordingsList");
 
@@ -453,25 +633,20 @@
       }
 
       let html = `<table>
-        <thead>
-          <tr>
-            <th>Filename</th>
-            <th>Size</th>
-            <th>Date</th>
-            <th style="text-align:right">Actions</th>
-          </tr>
-        </thead>
-        <tbody>`;
+        <thead><tr>
+          <th>Filename</th><th>Size</th><th>Date</th>
+          <th style="text-align:right">Actions</th>
+        </tr></thead><tbody>`;
 
       for (const r of data.recordings) {
-        const encName = r.filename.replace(/"/g, "&quot;");
+        const enc = r.filename.replace(/"/g, "&quot;");
         html += `<tr>
           <td class="filename">${escHtml(r.filename)}</td>
           <td>${r.size_mb} MB</td>
           <td>${escHtml(r.modified)}</td>
           <td class="actions">
-            <button class="btn-upload" onclick="uploadRecording('${encName}', this)">&#8679; Upload</button>
-            <button class="btn-delete" onclick="deleteRecording('${encName}', this)">&#128465; Delete</button>
+            <button class="btn-upload" onclick="uploadRecording('${enc}', this)">&#8679; Upload</button>
+            <button class="btn-delete" onclick="deleteRecording('${enc}', this)">&#128465; Delete</button>
           </td>
         </tr>`;
       }
@@ -479,22 +654,19 @@
       html += `</tbody></table>`;
       container.innerHTML = html;
     } catch (e) {
-      document.getElementById("recordingsList").innerHTML = '<div class="empty-state">Failed to load recordings.</div>';
+      document.getElementById("recordingsList").innerHTML =
+        '<div class="empty-state">Failed to load recordings.</div>';
     }
   }
 
-  function escHtml(str) {
-    return str.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
-  }
+  // ── Init ──────────────────────────────────────────────────────────────────
 
-  function setLoading(id, loading) {
-    const btn = document.getElementById(id);
-    if (!btn) return;
-    btn.disabled = loading;
-  }
+  pollWaydroid();
+  setInterval(pollWaydroid, 8000);
 
   pollStatus();
   setInterval(pollStatus, 5000);
+
   loadRecordings();
   setInterval(loadRecordings, 15000);
 </script>
