@@ -14,8 +14,63 @@ DISPLAY = ":1"
 RESOLUTION = "1280x720"
 FRAMERATE = "30"
 
-WAYDROID_CONFIG_NODES = "/var/lib/waydroid/lxc/waydroid/config_nodes"
-WAYDROID_ROOTFS = "/var/lib/waydroid/rootfs"
+WAYDROID_LXC_DIR    = "/var/lib/waydroid/lxc/waydroid"
+WAYDROID_ROOTFS     = "/var/lib/waydroid/rootfs"
+LXC_START_REAL      = "/usr/bin/lxc-start.real"
+LXC_START_WRAPPER   = "/usr/bin/lxc-start"
+
+# Wrapper script installed over /usr/bin/lxc-start.
+# Waydroid regenerates config_nodes + config_session every container start then
+# calls lxc-start.  This wrapper intercepts that call — the only moment where
+# the configs exist but LXC hasn't read them yet — patches all relative mount
+# entry targets to absolute paths inside the container rootfs, then execs the
+# real lxc-start.  Works for both tmpfs and bind mounts; survives Waydroid
+# restarts and upgrades because it runs at the OS syscall boundary.
+LXC_WRAPPER_SCRIPT = r"""#!/bin/bash
+# DroidRecord — LXC 5.0 / Waydroid 1.6.x mount-path shim
+# Intercepts every lxc-start call and rewrites relative mount targets to
+# absolute paths inside the container rootfs before LXC reads the configs.
+
+ROOTFS=/var/lib/waydroid/rootfs
+LXC_DIR=/var/lib/waydroid/lxc/waydroid
+
+patch_config() {
+  local cfg="$1"
+  [ -f "$cfg" ] || return
+
+  # For every lxc.mount.entry line whose target (2nd field) is relative
+  # (does NOT start with /), prepend the rootfs path.
+  # Handles: tmpfs, ext4, none (bind) — any fstype.
+  python3 - "$cfg" "$ROOTFS" <<'PYEOF'
+import sys, re
+
+cfg_path = sys.argv[1]
+rootfs   = sys.argv[2]
+
+with open(cfg_path) as f:
+    lines = f.readlines()
+
+out = []
+for line in lines:
+    m = re.match(
+        r'^(lxc\.mount\.entry\s*=\s*\S+)\s+([^\s/]\S*)\s+(.*)$',
+        line.rstrip('\n')
+    )
+    if m:
+        src, target, rest = m.group(1), m.group(2), m.group(3)
+        line = f"{src} {rootfs}/{target} {rest}\n"
+    out.append(line)
+
+with open(cfg_path, 'w') as f:
+    f.writelines(out)
+PYEOF
+}
+
+patch_config "$LXC_DIR/config_nodes"
+patch_config "$LXC_DIR/config_session"
+
+exec /usr/bin/lxc-start.real "$@"
+"""
 
 os.makedirs(RECORDINGS_DIR, exist_ok=True)
 
@@ -42,35 +97,47 @@ def get_elapsed():
         return int(time.time() - state["start_time"] + state["elapsed_paused"])
 
 
-def _waydroid_patch_lxc_config():
+def _install_lxc_wrapper():
     """
-    Fix for LXC 5.0 / Waydroid 1.6.x incompatibility on Ubuntu 22.04 + kernel 6.x.
+    Install a shim over /usr/bin/lxc-start that fixes LXC 5.0 / Waydroid 1.6.x
+    mount-path resolution on every container start.
 
-    LXC 5.0 resolves lxc.mount.entry target paths relative to the host LXC
-    library directory (/usr/lib/x86_64-linux-gnu/lxc/) instead of the container
-    rootfs.  Waydroid generates bare relative paths (dev, tmp, var, run, mnt/extra)
-    which causes "Failed to mount tmpfs on /usr/lib/.../lxc/dev" errors.
+    Why a wrapper and not a config patch:
+      Waydroid regenerates config_nodes and config_session fresh on every
+      waydroid-container start, so any pre-patch is immediately overwritten.
+      The wrapper intercepts lxc-start — called by Waydroid after config
+      generation — rewrites all relative lxc.mount.entry targets to absolute
+      paths inside the container rootfs, then execs the real lxc-start.
+      This covers both config files, both tmpfs and bind mounts, and survives
+      Waydroid upgrades automatically.
 
-    Fix: remove all lxc.mount.entry = tmpfs lines entirely.  LXC and the Android
-    container will create these mount points itself at runtime; the explicit entries
-    only cause conflicts with LXC 5.0.
+    Idempotent: safe to call on every Start click.
     """
-    if not os.path.exists(WAYDROID_CONFIG_NODES):
-        return False, "config_nodes not found — has waydroid init been run?"
+    already = os.path.exists(LXC_START_REAL)
+    msgs = []
 
     try:
-        with open(WAYDROID_CONFIG_NODES, "r") as f:
-            lines = f.readlines()
+        if not already:
+            # Back up the real lxc-start
+            os.rename(LXC_START_WRAPPER, LXC_START_REAL)
+            msgs.append(f"Backed up lxc-start → lxc-start.real")
 
-        patched = [l for l in lines if not l.strip().startswith("lxc.mount.entry = tmpfs")]
+        # (Re)write the wrapper — idempotent
+        with open(LXC_START_WRAPPER, "w") as f:
+            f.write(LXC_WRAPPER_SCRIPT)
+        os.chmod(LXC_START_WRAPPER, 0o755)
+        msgs.append("lxc-start wrapper installed (LXC 5.0 mount-path shim)")
+        return True, msgs
 
-        removed = len(lines) - len(patched)
-        with open(WAYDROID_CONFIG_NODES, "w") as f:
-            f.writelines(patched)
-
-        return True, f"Removed {removed} tmpfs mount entries from config_nodes"
     except Exception as e:
-        return False, str(e)
+        # If we already moved the real binary but writing the wrapper failed,
+        # restore it so the system isn't broken
+        if not already and os.path.exists(LXC_START_REAL) and not os.path.exists(LXC_START_WRAPPER):
+            try:
+                os.rename(LXC_START_REAL, LXC_START_WRAPPER)
+            except Exception:
+                pass
+        return False, [str(e)]
 
 
 def _waydroid_status():
@@ -320,11 +387,15 @@ def api_waydroid_status():
 def api_waydroid_start():
     messages = []
 
-    # Step 1: apply LXC 5.0 patch — remove tmpfs mount entries
-    ok, msg = _waydroid_patch_lxc_config()
-    messages.append(msg)
+    # Step 1: install the lxc-start wrapper shim (idempotent)
+    # The wrapper intercepts every lxc-start call Waydroid makes, patches
+    # both config_nodes and config_session to absolute paths after Waydroid
+    # writes them, then forwards to the real lxc-start.  This is the only
+    # reliable fix because Waydroid regenerates both files on every start.
+    ok, shim_msgs = _install_lxc_wrapper()
+    messages.extend(shim_msgs)
     if not ok:
-        return jsonify({"error": msg, "messages": messages}), 500
+        return jsonify({"error": shim_msgs[-1], "messages": messages}), 500
 
     # Step 2: start the container service
     try:
@@ -333,12 +404,16 @@ def api_waydroid_start():
             capture_output=True, text=True, timeout=30
         )
         if r.returncode != 0:
-            err = r.stderr.strip() or r.stdout.strip() or "Failed to start waydroid-container"
+            err = (r.stderr.strip() or r.stdout.strip() or
+                   "Failed to start waydroid-container")
             messages.append(err)
             return jsonify({"error": err, "messages": messages}), 500
         messages.append("waydroid-container started")
     except subprocess.TimeoutExpired:
-        return jsonify({"error": "Timed out starting waydroid-container", "messages": messages}), 500
+        return jsonify({
+            "error": "Timed out starting waydroid-container",
+            "messages": messages
+        }), 500
     except Exception as e:
         return jsonify({"error": str(e), "messages": messages}), 500
 
