@@ -112,15 +112,19 @@ LXC_DIR=/var/lib/waydroid/lxc/waydroid
 patch_config() {
   local cfg="$1"; [ -f "$cfg" ] || return
   python3 - "$cfg" "$ROOTFS" <<'PYEOF'
-import sys, re
+import sys
 cfg_path, rootfs = sys.argv[1], sys.argv[2]
-with open(cfg_path) as f: lines = f.readlines()
-out = []
-for line in lines:
-    m = re.match(r'^(lxc\.mount\.entry\s*=\s*\S+)\s+([^\s/]\S*)\s+(.*)$', line.rstrip('\n'))
-    if m: line = f"{m.group(1)} {rootfs}/{m.group(2)} {m.group(3)}\n"
-    out.append(line)
-with open(cfg_path, 'w') as f: f.writelines(out)
+lines_out = []
+with open(cfg_path) as f:
+    for line in f:
+        if line.startswith('lxc.mount.entry'):
+            fields = line.split()
+            if len(fields) >= 4 and not fields[3].startswith('/'):
+                fields[3] = rootfs + '/' + fields[3]
+                line = ' '.join(fields) + '\n'
+        lines_out.append(line)
+with open(cfg_path, 'w') as f:
+    f.writelines(lines_out)
 PYEOF
 }
 patch_config "$LXC_DIR/config_nodes"
@@ -131,9 +135,22 @@ EOF
 sudo chmod +x /usr/bin/lxc-start
 ```
 
-**Step 3 — start and display:**
+**Step 3 — pre-start requirements and display:**
+
+Two host-side resources must exist before `lxc-start` runs — the DroidRecord UI and `install.sh` both handle these automatically, but if you're starting manually:
 
 ```bash
+# PulseAudio socket directory (source for bind mount in config_session)
+mkdir -p /run/user/0/pulse
+
+# waydroid0 network bridge (required for container networking)
+ip link show waydroid0 2>/dev/null || (
+  ip link add waydroid0 type bridge &&
+  ip addr add 192.168.250.1/24 dev waydroid0 &&
+  ip link set waydroid0 up
+)
+
+# Now start the container and show the UI
 systemctl start waydroid-container
 DISPLAY=:1 waydroid show-full-ui
 ```
@@ -297,6 +314,24 @@ grep 'lxc.mount.entry' /var/lib/waydroid/lxc/waydroid/config_nodes | head -5
 ```
 
 If targets are still relative, the wrapper may have failed silently — check that `python3` is available at `/usr/bin/python3` and that the wrapper is executable (`ls -la /usr/bin/lxc-start`).
+
+**Waydroid: data/pulse bind mount source missing or waydroid0 bridge missing**
+
+Even after the wrapper fixes the target paths to absolute, the *source* paths for bind mounts must exist on the host before `lxc-start` runs. Two required resources:
+
+```bash
+# PulseAudio socket directory — must exist (socket itself is optional)
+ls /run/user/0/pulse || mkdir -p /run/user/0/pulse
+
+# waydroid0 bridge — required for container networking
+ip link show waydroid0 || (
+  ip link add waydroid0 type bridge &&
+  ip addr add 192.168.250.1/24 dev waydroid0 &&
+  ip link set waydroid0 up
+)
+```
+
+The DroidRecord UI (Start Emulator button) and `install.sh` both create these automatically. If you bypassed both, create them manually before `systemctl start waydroid-container`.
 
 **Port 6080 not reachable**
 - Check firewall: `sudo ufw allow 6080/tcp`
