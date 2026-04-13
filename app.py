@@ -14,6 +14,9 @@ DISPLAY = ":1"
 RESOLUTION = "1280x720"
 FRAMERATE = "30"
 
+WAYDROID_CONFIG_NODES = "/var/lib/waydroid/lxc/waydroid/config_nodes"
+WAYDROID_ROOTFS = "/var/lib/waydroid/rootfs"
+
 os.makedirs(RECORDINGS_DIR, exist_ok=True)
 
 state = {
@@ -37,6 +40,67 @@ def get_elapsed():
         if state["status"] == "paused":
             return state["elapsed_paused"]
         return int(time.time() - state["start_time"] + state["elapsed_paused"])
+
+
+def _waydroid_patch_lxc_config():
+    """
+    Fix for LXC 5.0 / Waydroid 1.6.x incompatibility on Ubuntu 22.04 + kernel 6.x.
+
+    LXC 5.0 resolves lxc.mount.entry target paths relative to the host LXC
+    library directory (/usr/lib/x86_64-linux-gnu/lxc/) instead of the container
+    rootfs.  Waydroid generates bare relative paths (dev, tmp, var, run, mnt/extra)
+    which causes "Failed to mount tmpfs on /usr/lib/.../lxc/dev" errors.
+
+    Fix: remove all lxc.mount.entry = tmpfs lines entirely.  LXC and the Android
+    container will create these mount points itself at runtime; the explicit entries
+    only cause conflicts with LXC 5.0.
+    """
+    if not os.path.exists(WAYDROID_CONFIG_NODES):
+        return False, "config_nodes not found — has waydroid init been run?"
+
+    try:
+        with open(WAYDROID_CONFIG_NODES, "r") as f:
+            lines = f.readlines()
+
+        patched = [l for l in lines if not l.strip().startswith("lxc.mount.entry = tmpfs")]
+
+        removed = len(lines) - len(patched)
+        with open(WAYDROID_CONFIG_NODES, "w") as f:
+            f.writelines(patched)
+
+        return True, f"Removed {removed} tmpfs mount entries from config_nodes"
+    except Exception as e:
+        return False, str(e)
+
+
+def _waydroid_status():
+    """Return a dict with waydroid container/session status."""
+    container = "stopped"
+    session = "stopped"
+
+    try:
+        r = subprocess.run(
+            ["systemctl", "is-active", "waydroid-container"],
+            capture_output=True, text=True, timeout=5
+        )
+        if r.stdout.strip() == "active":
+            container = "running"
+    except Exception:
+        pass
+
+    try:
+        r = subprocess.run(
+            ["waydroid", "status"],
+            capture_output=True, text=True, timeout=5
+        )
+        if "Session:\tRUNNING" in r.stdout:
+            session = "running"
+        elif "Session:\tSTOPPED" in r.stdout:
+            session = "stopped"
+    except Exception:
+        pass
+
+    return {"container": container, "session": session}
 
 
 @app.route("/")
@@ -241,6 +305,89 @@ def api_delete(filename):
         return jsonify({"status": "deleted", "filename": filename})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Waydroid control endpoints
+# ---------------------------------------------------------------------------
+
+@app.route("/api/waydroid/status")
+def api_waydroid_status():
+    return jsonify(_waydroid_status())
+
+
+@app.route("/api/waydroid/start", methods=["POST"])
+def api_waydroid_start():
+    messages = []
+
+    # Step 1: apply LXC 5.0 patch — remove tmpfs mount entries
+    ok, msg = _waydroid_patch_lxc_config()
+    messages.append(msg)
+    if not ok:
+        return jsonify({"error": msg, "messages": messages}), 500
+
+    # Step 2: start the container service
+    try:
+        r = subprocess.run(
+            ["systemctl", "start", "waydroid-container"],
+            capture_output=True, text=True, timeout=30
+        )
+        if r.returncode != 0:
+            err = r.stderr.strip() or r.stdout.strip() or "Failed to start waydroid-container"
+            messages.append(err)
+            return jsonify({"error": err, "messages": messages}), 500
+        messages.append("waydroid-container started")
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "Timed out starting waydroid-container", "messages": messages}), 500
+    except Exception as e:
+        return jsonify({"error": str(e), "messages": messages}), 500
+
+    # Step 3: launch the Waydroid UI on the virtual display
+    try:
+        subprocess.Popen(
+            ["waydroid", "show-full-ui"],
+            env={**os.environ, "DISPLAY": DISPLAY},
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        messages.append("waydroid show-full-ui launched on DISPLAY=" + DISPLAY)
+    except Exception as e:
+        messages.append(f"Warning: could not launch UI: {e}")
+
+    return jsonify({"status": "started", "messages": messages})
+
+
+@app.route("/api/waydroid/stop", methods=["POST"])
+def api_waydroid_stop():
+    messages = []
+
+    # Terminate the session first
+    try:
+        subprocess.run(
+            ["waydroid", "session", "stop"],
+            capture_output=True, text=True, timeout=15
+        )
+        messages.append("waydroid session stopped")
+    except Exception as e:
+        messages.append(f"session stop warning: {e}")
+
+    # Stop the container service
+    try:
+        r = subprocess.run(
+            ["systemctl", "stop", "waydroid-container"],
+            capture_output=True, text=True, timeout=20
+        )
+        if r.returncode != 0:
+            err = r.stderr.strip() or "Failed to stop waydroid-container"
+            messages.append(err)
+            return jsonify({"error": err, "messages": messages}), 500
+        messages.append("waydroid-container stopped")
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "Timed out stopping waydroid-container", "messages": messages}), 500
+    except Exception as e:
+        return jsonify({"error": str(e), "messages": messages}), 500
+
+    return jsonify({"status": "stopped", "messages": messages})
 
 
 if __name__ == "__main__":
