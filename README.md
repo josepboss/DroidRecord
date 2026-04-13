@@ -70,11 +70,48 @@ echo "deb [signed-by=/usr/share/keyrings/waydroid.gpg] \
 sudo apt-get update && sudo apt-get install -y waydroid
 ```
 
-> **Do not run `waydroid init` from the install script or a non-interactive session.** It downloads system images and requires a working display context. Run it manually after the system is up:
+> **Do not run `waydroid init` from the install script or a non-interactive session.** It downloads system images and requires a working display context. Run the steps below manually over SSH after the system is up:
+
+**Step 1 — initialise images:**
 
 ```bash
-# Run over SSH after Xvfb is started:
 waydroid init -s GAPPS -f
+```
+
+**Step 2 — patch the LXC config (required on LXC 5.0 / Ubuntu 22.04 + kernel 6.x):**
+
+LXC 5.0 changed how it resolves relative `lxc.mount.entry` target paths. Waydroid's generated `config_nodes` uses bare relative paths (e.g. `dev`, `tmp`) which LXC 5.0 now resolves against the host LXC library dir (`/usr/lib/x86_64-linux-gnu/lxc/`) instead of the container rootfs, causing mount failures like:
+
+```
+Failed to mount "tmpfs" on "/usr/lib/x86_64-linux-gnu/lxc/dev"
+```
+
+Fix: rewrite the paths to absolute before starting the container:
+
+```bash
+ROOTFS=/var/lib/waydroid/rootfs
+CONFIG=/var/lib/waydroid/lxc/waydroid/config_nodes
+
+# Prefix all relative tmpfs mount targets with the container rootfs path
+sed -i -E \
+  "s|^(lxc\.mount\.entry = tmpfs) ([^ ]+) (tmpfs.*)|\1 ${ROOTFS}/\2 \3|g" \
+  "$CONFIG"
+```
+
+This turns entries like:
+```
+lxc.mount.entry = tmpfs dev tmpfs nosuid 0 0
+```
+into:
+```
+lxc.mount.entry = tmpfs /var/lib/waydroid/rootfs/dev tmpfs nosuid 0 0
+```
+
+Run `grep 'lxc.mount.entry = tmpfs' "$CONFIG"` to verify all entries now use absolute paths before continuing.
+
+**Step 3 — start and display:**
+
+```bash
 systemctl start waydroid-container
 DISPLAY=:1 waydroid show-full-ui
 ```
@@ -215,6 +252,28 @@ Edit `app.py` to change:
 - Start the session: `waydroid session start`
 - Show the UI: `DISPLAY=:1 waydroid show-full-ui`
 - Check kernel modules: `lsmod | grep binder`
+
+**Waydroid container fails to start — `Failed to mount "tmpfs" on "/usr/lib/x86_64-linux-gnu/lxc/..."` (LXC 5.0 bug)**
+
+This is a known incompatibility between Waydroid 1.6.x and LXC 5.0.0 on Ubuntu 22.04 with kernel 6.x. LXC 5.0 resolves relative `lxc.mount.entry` target paths against the host LXC library directory instead of the container rootfs.
+
+Patch the generated config after `waydroid init`:
+
+```bash
+ROOTFS=/var/lib/waydroid/rootfs
+CONFIG=/var/lib/waydroid/lxc/waydroid/config_nodes
+
+sed -i -E \
+  "s|^(lxc\.mount\.entry = tmpfs) ([^ ]+) (tmpfs.*)|\1 ${ROOTFS}/\2 \3|g" \
+  "$CONFIG"
+
+# Verify — all tmpfs targets should now be absolute paths:
+grep 'lxc.mount.entry = tmpfs' "$CONFIG"
+
+systemctl restart waydroid-container
+```
+
+Affected mount points: `dev`, `mnt/extra`, `tmp`, `var`, `run`. The patch makes each target absolute (e.g. `/var/lib/waydroid/rootfs/dev`) so LXC 5.0 resolves it correctly inside the container.
 
 **Port 6080 not reachable**
 - Check firewall: `sudo ufw allow 6080/tcp`
