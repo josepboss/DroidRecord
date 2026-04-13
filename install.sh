@@ -86,8 +86,9 @@ fi
 cat > "$LXC_BIN" <<'WRAPPER'
 #!/bin/bash
 # DroidRecord — LXC 5.0 / Waydroid 1.6.x mount-path shim
-# Rewrites all relative lxc.mount.entry targets in both Waydroid config files
-# to absolute paths inside the container rootfs before forwarding to lxc-start.
+# Patches ALL relative lxc.mount.entry targets (tmpfs AND bind mounts) in both
+# config_nodes and config_session to absolute paths inside the container rootfs
+# before forwarding every call to the real lxc-start.
 
 ROOTFS=/var/lib/waydroid/rootfs
 LXC_DIR=/var/lib/waydroid/lxc/waydroid
@@ -96,21 +97,23 @@ patch_config() {
   local cfg="$1"
   [ -f "$cfg" ] || return
   python3 - "$cfg" "$ROOTFS" <<'PYEOF'
-import sys, re
+import sys
+
 cfg_path, rootfs = sys.argv[1], sys.argv[2]
+
+lines_out = []
 with open(cfg_path) as f:
-    lines = f.readlines()
-out = []
-for line in lines:
-    m = re.match(
-        r'^(lxc\.mount\.entry\s*=\s*\S+)\s+([^\s/]\S*)\s+(.*)$',
-        line.rstrip('\n')
-    )
-    if m:
-        line = f"{m.group(1)} {rootfs}/{m.group(2)} {m.group(3)}\n"
-    out.append(line)
+    for line in f:
+        if line.startswith('lxc.mount.entry'):
+            # fields: ['lxc.mount.entry', '=', 'SOURCE', 'TARGET', ...]
+            fields = line.split()
+            if len(fields) >= 4 and not fields[3].startswith('/'):
+                fields[3] = rootfs + '/' + fields[3]
+                line = ' '.join(fields) + '\n'
+        lines_out.append(line)
+
 with open(cfg_path, 'w') as f:
-    f.writelines(out)
+    f.writelines(lines_out)
 PYEOF
 }
 
