@@ -78,36 +78,58 @@ sudo apt-get update && sudo apt-get install -y waydroid
 waydroid init -s GAPPS -f
 ```
 
-**Step 2 — patch the LXC config (required on LXC 5.0 / Ubuntu 22.04 + kernel 6.x):**
+**Step 2 — the lxc-start wrapper handles the LXC 5.0 fix automatically**
 
-LXC 5.0 changed how it resolves relative `lxc.mount.entry` target paths. Waydroid's generated `config_nodes` uses bare relative paths (e.g. `dev`, `tmp`) which LXC 5.0 now resolves against the host LXC library dir (`/usr/lib/x86_64-linux-gnu/lxc/`) instead of the container rootfs, causing mount failures like:
+`install.sh` installs a shim over `/usr/bin/lxc-start` that fixes this transparently on every container start. No manual config patching is needed.
+
+**Why the old config-patch approach does not work:**
+
+LXC 5.0 resolves relative `lxc.mount.entry` target paths against `/usr/lib/x86_64-linux-gnu/lxc/` on the host instead of the container rootfs — causing `Failed to create directory "/usr/lib/x86_64-linux-gnu/lxc/dev"` errors. The affected files are both `config_nodes` **and** `config_session`. Critically, **Waydroid regenerates both files on every container start**, so any pre-patch is immediately overwritten. Patching after the fact never runs at the right moment.
+
+**The wrapper approach:**
+
+`install.sh` backs up the real `lxc-start` to `lxc-start.real` and replaces it with a bash shim. The shim is the only point in the call chain where Waydroid has already written the configs but LXC hasn't read them yet:
 
 ```
-Failed to mount "tmpfs" on "/usr/lib/x86_64-linux-gnu/lxc/dev"
+Waydroid writes config_nodes + config_session
+        ↓
+/usr/bin/lxc-start (shim) — patches both files, then:
+        ↓
+/usr/bin/lxc-start.real — reads the now-correct config
 ```
 
-Fix: rewrite the paths to absolute before starting the container:
+The shim uses Python to rewrite every `lxc.mount.entry` line whose target is a relative path, prefixing it with `/var/lib/waydroid/rootfs`. It covers all fstypes (tmpfs, bind, ext4), both config files, and runs on every restart automatically.
+
+If `install.sh` was not run and you need to install the shim manually:
 
 ```bash
+sudo mv /usr/bin/lxc-start /usr/bin/lxc-start.real
+
+sudo tee /usr/bin/lxc-start <<'EOF'
+#!/bin/bash
 ROOTFS=/var/lib/waydroid/rootfs
-CONFIG=/var/lib/waydroid/lxc/waydroid/config_nodes
+LXC_DIR=/var/lib/waydroid/lxc/waydroid
+patch_config() {
+  local cfg="$1"; [ -f "$cfg" ] || return
+  python3 - "$cfg" "$ROOTFS" <<'PYEOF'
+import sys, re
+cfg_path, rootfs = sys.argv[1], sys.argv[2]
+with open(cfg_path) as f: lines = f.readlines()
+out = []
+for line in lines:
+    m = re.match(r'^(lxc\.mount\.entry\s*=\s*\S+)\s+([^\s/]\S*)\s+(.*)$', line.rstrip('\n'))
+    if m: line = f"{m.group(1)} {rootfs}/{m.group(2)} {m.group(3)}\n"
+    out.append(line)
+with open(cfg_path, 'w') as f: f.writelines(out)
+PYEOF
+}
+patch_config "$LXC_DIR/config_nodes"
+patch_config "$LXC_DIR/config_session"
+exec /usr/bin/lxc-start.real "$@"
+EOF
 
-# Prefix all relative tmpfs mount targets with the container rootfs path
-sed -i -E \
-  "s|^(lxc\.mount\.entry = tmpfs) ([^ ]+) (tmpfs.*)|\1 ${ROOTFS}/\2 \3|g" \
-  "$CONFIG"
+sudo chmod +x /usr/bin/lxc-start
 ```
-
-This turns entries like:
-```
-lxc.mount.entry = tmpfs dev tmpfs nosuid 0 0
-```
-into:
-```
-lxc.mount.entry = tmpfs /var/lib/waydroid/rootfs/dev tmpfs nosuid 0 0
-```
-
-Run `grep 'lxc.mount.entry = tmpfs' "$CONFIG"` to verify all entries now use absolute paths before continuing.
 
 **Step 3 — start and display:**
 
@@ -253,27 +275,28 @@ Edit `app.py` to change:
 - Show the UI: `DISPLAY=:1 waydroid show-full-ui`
 - Check kernel modules: `lsmod | grep binder`
 
-**Waydroid container fails to start — `Failed to mount "tmpfs" on "/usr/lib/x86_64-linux-gnu/lxc/..."` (LXC 5.0 bug)**
+**Waydroid container fails — `Failed to create directory "/usr/lib/x86_64-linux-gnu/lxc/..."` or `Failed to mount "tmpfs"` (LXC 5.0 bug)**
 
-This is a known incompatibility between Waydroid 1.6.x and LXC 5.0.0 on Ubuntu 22.04 with kernel 6.x. LXC 5.0 resolves relative `lxc.mount.entry` target paths against the host LXC library directory instead of the container rootfs.
+LXC 5.0 resolves relative `lxc.mount.entry` target paths against the host LXC library dir instead of the container rootfs. Waydroid regenerates both `config_nodes` and `config_session` on every container start, so patching the files directly never survives a restart.
 
-Patch the generated config after `waydroid init`:
+The correct fix is the **lxc-start wrapper** installed by `install.sh`. Check whether it is in place:
 
 ```bash
-ROOTFS=/var/lib/waydroid/rootfs
-CONFIG=/var/lib/waydroid/lxc/waydroid/config_nodes
-
-sed -i -E \
-  "s|^(lxc\.mount\.entry = tmpfs) ([^ ]+) (tmpfs.*)|\1 ${ROOTFS}/\2 \3|g" \
-  "$CONFIG"
-
-# Verify — all tmpfs targets should now be absolute paths:
-grep 'lxc.mount.entry = tmpfs' "$CONFIG"
-
-systemctl restart waydroid-container
+head -1 /usr/bin/lxc-start
+# Should print: #!/bin/bash
+# If it prints ELF or nothing, the wrapper is not installed.
 ```
 
-Affected mount points: `dev`, `mnt/extra`, `tmp`, `var`, `run`. The patch makes each target absolute (e.g. `/var/lib/waydroid/rootfs/dev`) so LXC 5.0 resolves it correctly inside the container.
+If the wrapper is missing (e.g. on a system that didn't use `install.sh`), install it manually — see the Waydroid section of this README for the one-paste install command.
+
+If the wrapper is present but the container still fails, check the patched config right after a failed start:
+
+```bash
+grep 'lxc.mount.entry' /var/lib/waydroid/lxc/waydroid/config_nodes | head -5
+# All targets should start with /var/lib/waydroid/rootfs/...
+```
+
+If targets are still relative, the wrapper may have failed silently — check that `python3` is available at `/usr/bin/python3` and that the wrapper is executable (`ls -la /usr/bin/lxc-start`).
 
 **Port 6080 not reachable**
 - Check firewall: `sudo ufw allow 6080/tcp`
