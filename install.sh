@@ -54,6 +54,10 @@ apt-get install -y \
   curl python3-pip lzip wget \
   linux-headers-generic
 
+info "Loading binder kernel module (required for Waydroid)..."
+modprobe binder_linux devices="binder,hwbinder,vndbinder" || warn "binder_linux module not available — Waydroid will not work without it."
+echo 'binder_linux' >> /etc/modules-load.d/waydroid.conf
+
 info "Adding Waydroid repository..."
 curl -s https://repo.waydro.id/waydroid.gpg | gpg --dearmor -o /usr/share/keyrings/waydroid.gpg
 echo "deb [signed-by=/usr/share/keyrings/waydroid.gpg] https://repo.waydro.id/ jammy main" \
@@ -61,13 +65,11 @@ echo "deb [signed-by=/usr/share/keyrings/waydroid.gpg] https://repo.waydro.id/ j
 apt-get update -y
 apt-get install -y waydroid
 
-info "Initialising Waydroid with GApps (GAPPS variant)..."
-if ! waydroid status 2>/dev/null | grep -q "Session:" ; then
-  waydroid init -s GAPPS -f
-  info "Waydroid initialised with GApps."
-else
-  info "Waydroid already initialised, skipping init."
-fi
+warn "Waydroid installed but NOT initialised — init requires an active display session."
+warn "After install, run manually over SSH:"
+warn "  waydroid init -s GAPPS -f"
+warn "  systemctl start waydroid-container"
+warn "  DISPLAY=:1 waydroid show-full-ui"
 
 info "Installing Python requirements for DroidRecord..."
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -110,30 +112,55 @@ Environment=DISPLAY=:1
 WantedBy=multi-user.target
 SYSTEMD
 
+info "Creating systemd service for x11vnc..."
+cat > /etc/systemd/system/x11vnc.service <<'SYSTEMD'
+[Unit]
+Description=x11vnc VNC Server
+After=xvfb-openbox.service
+Requires=xvfb-openbox.service
+
+[Service]
+ExecStart=/usr/bin/x11vnc -display :1 -rfbport 5900 -nopw -listen localhost -xkb -forever -shared
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+SYSTEMD
+
 info "Creating systemd service for noVNC..."
 cat > /etc/systemd/system/novnc.service <<'SYSTEMD'
 [Unit]
-Description=noVNC web client
-After=xvfb-openbox.service
+Description=noVNC Web Client
+After=x11vnc.service
+Requires=x11vnc.service
 
 [Service]
-ExecStartPre=/bin/bash -c 'x11vnc -display :1 -rfbport 5900 -nopw -listen localhost -xkb -forever &'
 ExecStart=/usr/share/novnc/utils/novnc_proxy --vnc localhost:5900 --listen 6081
 Restart=on-failure
-RestartSec=5
+RestartSec=3
 
 [Install]
 WantedBy=multi-user.target
 SYSTEMD
 
 systemctl daemon-reload
-systemctl enable xvfb-openbox droidrecord novnc
+systemctl enable xvfb-openbox x11vnc droidrecord novnc
 systemctl start  xvfb-openbox
 
 info "Waiting 2s for Xvfb to start..."
 sleep 2
 
-systemctl start droidrecord novnc
+systemctl start x11vnc droidrecord novnc
+
+info "Opening firewall ports..."
+if command -v ufw &>/dev/null; then
+  ufw allow 6080/tcp comment "DroidRecord UI"
+  ufw allow 6081/tcp comment "noVNC"
+  info "ufw: ports 6080 and 6081 opened."
+else
+  warn "ufw not found — open ports 6080 and 6081 manually in your firewall/security group."
+fi
 
 info ""
 info "=============================================="
@@ -144,7 +171,10 @@ info "  noVNC (display):    http://<YOUR-IP>:6081/vnc.html"
 info ""
 info "  Next steps:"
 info "  1. Configure rclone for Google Drive:"
-info "     rclone config"
-info "     (Name the remote: gdrive)"
-info "  2. Open the recorder UI and start recording."
+info "     rclone config   (name the remote: gdrive)"
+info "  2. Initialise Waydroid manually over SSH:"
+info "     waydroid init -s GAPPS -f"
+info "     systemctl start waydroid-container"
+info "     DISPLAY=:1 waydroid show-full-ui"
+info "  3. Open the recorder UI and start recording."
 info "=============================================="
