@@ -65,28 +65,70 @@ echo "deb [signed-by=/usr/share/keyrings/waydroid.gpg] https://repo.waydro.id/ j
 apt-get update -y
 apt-get install -y waydroid
 
+info "Installing lxc-start wrapper shim (LXC 5.0 / Waydroid 1.6.x fix)..."
+# LXC 5.0 broke relative lxc.mount.entry target path resolution — paths are
+# resolved against /usr/lib/x86_64-linux-gnu/lxc/ on the host instead of
+# the container rootfs.  Waydroid regenerates config_nodes AND config_session
+# on every container start, so pre-patching those files does not survive a
+# restart.  The only reliable fix is to intercept lxc-start itself — the
+# single point in the call chain where configs already exist but LXC hasn't
+# read them yet.  The shim patches both files on every invocation then execs
+# the real lxc-start.
+
+LXC_REAL=/usr/bin/lxc-start.real
+LXC_BIN=/usr/bin/lxc-start
+
+if [ ! -f "$LXC_REAL" ]; then
+  mv "$LXC_BIN" "$LXC_REAL"
+  info "Backed up lxc-start → lxc-start.real"
+fi
+
+cat > "$LXC_BIN" <<'WRAPPER'
+#!/bin/bash
+# DroidRecord — LXC 5.0 / Waydroid 1.6.x mount-path shim
+# Rewrites all relative lxc.mount.entry targets in both Waydroid config files
+# to absolute paths inside the container rootfs before forwarding to lxc-start.
+
+ROOTFS=/var/lib/waydroid/rootfs
+LXC_DIR=/var/lib/waydroid/lxc/waydroid
+
+patch_config() {
+  local cfg="$1"
+  [ -f "$cfg" ] || return
+  python3 - "$cfg" "$ROOTFS" <<'PYEOF'
+import sys, re
+cfg_path, rootfs = sys.argv[1], sys.argv[2]
+with open(cfg_path) as f:
+    lines = f.readlines()
+out = []
+for line in lines:
+    m = re.match(
+        r'^(lxc\.mount\.entry\s*=\s*\S+)\s+([^\s/]\S*)\s+(.*)$',
+        line.rstrip('\n')
+    )
+    if m:
+        line = f"{m.group(1)} {rootfs}/{m.group(2)} {m.group(3)}\n"
+    out.append(line)
+with open(cfg_path, 'w') as f:
+    f.writelines(out)
+PYEOF
+}
+
+patch_config "$LXC_DIR/config_nodes"
+patch_config "$LXC_DIR/config_session"
+
+exec /usr/bin/lxc-start.real "$@"
+WRAPPER
+
+chmod +x "$LXC_BIN"
+info "lxc-start wrapper installed — relative mount paths will be fixed automatically on every container start."
+
 warn "Waydroid installed but NOT initialised — init requires an active display session."
-warn "After install, run the following manually over SSH (in order):"
-warn ""
-warn "  Step 1 — initialise images:"
-warn "    waydroid init -s GAPPS -f"
-warn ""
-warn "  Step 2 — patch LXC config for LXC 5.0 compatibility (Ubuntu 22.04 + kernel 6.x):"
-warn "    LXC 5.0 broke relative tmpfs mount paths in container configs."
-warn "    This one-liner fixes /var/lib/waydroid/lxc/waydroid/config_nodes:"
-warn ""
-warn "    ROOTFS=/var/lib/waydroid/rootfs"
-warn "    CONFIG=/var/lib/waydroid/lxc/waydroid/config_nodes"
-warn "    sed -i -E \"s|^(lxc\\.mount\\.entry = tmpfs) ([^ ]+) (tmpfs.*)|\1 \${ROOTFS}/\2 \3|g\" \"\$CONFIG\""
-warn ""
-warn "    This changes entries like:"
-warn "      lxc.mount.entry = tmpfs dev tmpfs nosuid 0 0"
-warn "    to:"
-warn "      lxc.mount.entry = tmpfs /var/lib/waydroid/rootfs/dev tmpfs nosuid 0 0"
-warn ""
-warn "  Step 3 — start and display:"
-warn "    systemctl start waydroid-container"
-warn "    DISPLAY=:1 waydroid show-full-ui"
+warn "After install, run manually over SSH:"
+warn "  Step 1: waydroid init -s GAPPS -f"
+warn "  Step 2: systemctl start waydroid-container"
+warn "  Step 3: DISPLAY=:1 waydroid show-full-ui"
+warn "  (The lxc-start wrapper will fix mount paths automatically on start.)"
 
 info "Installing Python requirements for DroidRecord..."
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
