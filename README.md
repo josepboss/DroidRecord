@@ -119,6 +119,8 @@ with open(cfg_path) as f:
     for line in f:
         if line.startswith('lxc.mount.entry'):
             fields = line.split()
+            if len(fields) >= 4 and fields[2] == 'tmpfs':
+                continue  # drop tmpfs entries entirely — LXC 5.0 can't handle them
             if len(fields) >= 4 and not fields[3].startswith('/'):
                 fields[3] = rootfs + '/' + fields[3]
                 line = ' '.join(fields) + '\n'
