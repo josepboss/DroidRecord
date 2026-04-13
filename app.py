@@ -38,31 +38,29 @@ patch_config() {
   local cfg="$1"
   [ -f "$cfg" ] || return
 
-  # For every lxc.mount.entry line whose target (2nd field) is relative
-  # (does NOT start with /), prepend the rootfs path.
-  # Handles: tmpfs, ext4, none (bind) — any fstype.
+  # Patch ALL lxc.mount.entry lines whose TARGET (4th whitespace-separated
+  # field: key = source TARGET ...) is a relative path.
+  # Uses field-split in Python rather than a regex to avoid ambiguity with
+  # bind mounts that have an absolute source (/root/.local/share/...) and a
+  # short relative target (data, run/user/0/pulse/native, waydroid0, etc.).
   python3 - "$cfg" "$ROOTFS" <<'PYEOF'
-import sys, re
+import sys
 
-cfg_path = sys.argv[1]
-rootfs   = sys.argv[2]
+cfg_path, rootfs = sys.argv[1], sys.argv[2]
 
+lines_out = []
 with open(cfg_path) as f:
-    lines = f.readlines()
-
-out = []
-for line in lines:
-    m = re.match(
-        r'^(lxc\.mount\.entry\s*=\s*\S+)\s+([^\s/]\S*)\s+(.*)$',
-        line.rstrip('\n')
-    )
-    if m:
-        src, target, rest = m.group(1), m.group(2), m.group(3)
-        line = f"{src} {rootfs}/{target} {rest}\n"
-    out.append(line)
+    for line in f:
+        if line.startswith('lxc.mount.entry'):
+            # fields: ['lxc.mount.entry', '=', 'SOURCE', 'TARGET', ...]
+            fields = line.split()
+            if len(fields) >= 4 and not fields[3].startswith('/'):
+                fields[3] = rootfs + '/' + fields[3]
+                line = ' '.join(fields) + '\n'
+        lines_out.append(line)
 
 with open(cfg_path, 'w') as f:
-    f.writelines(out)
+    f.writelines(lines_out)
 PYEOF
 }
 
@@ -138,6 +136,63 @@ def _install_lxc_wrapper():
             except Exception:
                 pass
         return False, [str(e)]
+
+
+def _waydroid_pre_start():
+    """
+    Create host-side resources that must exist before the LXC container starts.
+
+    1.  /run/user/0/pulse/  — PulseAudio socket directory.
+        config_session binds /run/user/0/pulse/native into the container.
+        With the lxc-start wrapper the target is now absolute, so LXC needs
+        the host source path to exist (even as an empty dir) before attempting
+        the bind mount; otherwise it aborts.  The socket itself is optional
+        (bind,optional in config_session) so the container starts fine without
+        an active PulseAudio daemon — audio simply won't work.
+
+    2.  waydroid0 network bridge — Waydroid uses this bridge for container
+        networking.  If it doesn't exist before lxc-start, the container
+        network setup fails.  We replicate what `waydroid-net` / ip commands
+        would do: create a bridge, assign 192.168.250.1/24, bring it up.
+    """
+    msgs = []
+
+    # --- PulseAudio socket directory ---
+    pulse_dir = "/run/user/0/pulse"
+    try:
+        os.makedirs(pulse_dir, mode=0o700, exist_ok=True)
+        msgs.append(f"Ensured {pulse_dir} exists")
+    except Exception as e:
+        msgs.append(f"Warning: could not create {pulse_dir}: {e}")
+
+    # --- waydroid0 bridge ---
+    try:
+        chk = subprocess.run(
+            ["ip", "link", "show", "waydroid0"],
+            capture_output=True, text=True
+        )
+        if chk.returncode != 0:
+            # Bridge doesn't exist — create it
+            for cmd in [
+                ["ip", "link", "add", "waydroid0", "type", "bridge"],
+                ["ip", "addr", "add", "192.168.250.1/24", "dev", "waydroid0"],
+                ["ip", "link", "set", "waydroid0", "up"],
+            ]:
+                r = subprocess.run(cmd, capture_output=True, text=True)
+                if r.returncode != 0:
+                    msgs.append(f"Warning: {' '.join(cmd)}: {r.stderr.strip()}")
+                    break
+            else:
+                msgs.append("waydroid0 bridge created (192.168.250.1/24)")
+        else:
+            # Ensure it's up
+            subprocess.run(["ip", "link", "set", "waydroid0", "up"],
+                           capture_output=True)
+            msgs.append("waydroid0 bridge already present — brought up")
+    except Exception as e:
+        msgs.append(f"Warning: waydroid0 bridge setup failed: {e}")
+
+    return msgs
 
 
 def _waydroid_status():
@@ -397,7 +452,13 @@ def api_waydroid_start():
     if not ok:
         return jsonify({"error": shim_msgs[-1], "messages": messages}), 500
 
-    # Step 2: start the container service
+    # Step 2: create host resources LXC needs before container start
+    # - /run/user/0/pulse/  (PulseAudio bind-mount source must exist)
+    # - waydroid0 bridge    (container networking)
+    pre_msgs = _waydroid_pre_start()
+    messages.extend(pre_msgs)
+
+    # Step 3: start the container service
     try:
         r = subprocess.run(
             ["systemctl", "start", "waydroid-container"],
