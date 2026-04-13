@@ -55,14 +55,28 @@ curl https://rclone.org/install.sh | sudo bash
 
 ### 3. Install Waydroid + GApps (optional)
 
+Install the package:
+
 ```bash
+# Load binder kernel module (required — Waydroid will not start without it)
+sudo modprobe binder_linux devices="binder,hwbinder,vndbinder"
+echo 'binder_linux' | sudo tee /etc/modules-load.d/waydroid.conf
+
 curl -s https://repo.waydro.id/waydroid.gpg | sudo gpg --dearmor \
   -o /usr/share/keyrings/waydroid.gpg
 echo "deb [signed-by=/usr/share/keyrings/waydroid.gpg] \
   https://repo.waydro.id/ jammy main" | \
   sudo tee /etc/apt/sources.list.d/waydroid.list
 sudo apt-get update && sudo apt-get install -y waydroid
-sudo waydroid init -s GAPPS -f
+```
+
+> **Do not run `waydroid init` from the install script or a non-interactive session.** It downloads system images and requires a working display context. Run it manually after the system is up:
+
+```bash
+# Run over SSH after Xvfb is started:
+waydroid init -s GAPPS -f
+systemctl start waydroid-container
+DISPLAY=:1 waydroid show-full-ui
 ```
 
 ### 4. Configure rclone for Google Drive
@@ -117,8 +131,13 @@ Then open **http://\<your-server-ip\>:6080** in your browser.
 
 ## (Optional) noVNC — view the virtual display in browser
 
+x11vnc and noVNC run as **separate** systemd services (installed by `install.sh`). To start them manually:
+
 ```bash
-x11vnc -display :1 -rfbport 5900 -nopw -listen localhost -xkb -forever &
+# Start x11vnc first (VNC server for the virtual display)
+x11vnc -display :1 -rfbport 5900 -nopw -listen localhost -xkb -forever -shared &
+
+# Then start noVNC (web proxy to the VNC server)
 /usr/share/novnc/utils/novnc_proxy --vnc localhost:5900 --listen 6081 &
 ```
 
@@ -128,13 +147,14 @@ Open **http://\<your-server-ip\>:6081/vnc.html** to see the virtual screen live.
 
 ## Systemd services (auto-start)
 
-The `install.sh` script creates three systemd services:
+The `install.sh` script creates four systemd services:
 
 | Service | Purpose |
 |---|---|
 | `xvfb-openbox` | Virtual display + window manager |
+| `x11vnc` | VNC server for the virtual display (port 5900) |
+| `novnc` | In-browser noVNC proxy (port 6081) — depends on x11vnc |
 | `droidrecord` | Flask web UI on port 6080 |
-| `novnc` | In-browser display viewer on port 6081 |
 
 Manage them with:
 
@@ -153,9 +173,11 @@ sudo journalctl -u droidrecord -f
 | Button | Action |
 |---|---|
 | Start | Begin recording the virtual display |
-| Pause | Freeze recording (uses SIGSTOP) |
+| Pause | Freeze recording (uses SIGSTOP on ffmpeg) |
 | Resume | Continue from where you paused |
 | Stop | Finalize and save the MP4 file |
+
+> **Pause note:** Pause uses `SIGSTOP` to freeze the ffmpeg process. The MP4 file stays open and incomplete while paused. This is safe for short pauses (under a few minutes), but extended pauses risk file corruption on some kernels or filesystems. When in doubt, stop the recording and start a new one.
 
 Recordings are saved to `/recordings/recording_YYYYMMDD_HHMMSS.mp4`.
 
