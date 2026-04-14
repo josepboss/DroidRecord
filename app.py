@@ -5,7 +5,7 @@ import time
 import glob
 import threading
 from datetime import datetime
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, send_file
 
 app = Flask(__name__)
 
@@ -249,6 +249,19 @@ def api_upload(filename):
         return jsonify({"error": "rclone not installed"}), 500
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/download/<filename>")
+def api_download(filename):
+    safe_name = os.path.basename(filename)
+    if safe_name != filename:
+        return jsonify({"error": "Invalid filename"}), 400
+
+    filepath = os.path.join(RECORDINGS_DIR, filename)
+    if not os.path.exists(filepath):
+        return jsonify({"error": "File not found"}), 404
+
+    return send_file(filepath, as_attachment=True, download_name=filename)
 
 
 @app.route("/api/delete/<filename>", methods=["DELETE"])
