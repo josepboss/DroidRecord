@@ -218,6 +218,9 @@
     .btn-delete { background: transparent; border: 1px solid var(--danger); color: var(--danger); font-size: 0.78rem; padding: 6px 12px; }
     .btn-delete:hover:not(:disabled) { background: var(--danger); color: #fff; }
 
+    .btn-download { background: transparent; border: 1px solid var(--accent); color: var(--accent); font-size: 0.78rem; padding: 6px 12px; }
+    .btn-download:hover { background: var(--accent); color: #fff; }
+
     .btn-wd-start { background: var(--purple); color: #fff; }
     .btn-wd-start:hover:not(:disabled) { background: var(--purple-hover); }
 
@@ -646,6 +649,7 @@
           <td>${escHtml(r.modified)}</td>
           <td class="actions">
             <button class="btn-upload" onclick="uploadRecording('${enc}', this)">&#8679; Upload</button>
+            <a class="btn-download" href="/api/download/${enc}" download="${enc}">&#8681; Download</a>
             <button class="btn-delete" onclick="deleteRecording('${enc}', this)">&#128465; Delete</button>
           </td>
         </tr>`;
