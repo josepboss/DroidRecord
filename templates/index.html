@@ -81,7 +81,7 @@
       font-weight: 700;
     }
 
-    /* Waydroid status row */
+    /* Redroid status row */
     .wd-row {
       display: flex;
       align-items: center;
@@ -318,9 +318,9 @@
   <div class="badge">VPS Screen Recorder</div>
 </header>
 
-<!-- ── Waydroid Control ──────────────────────────────────────────────────── -->
+<!-- ── Redroid Control ───────────────────────────────────────────────────── -->
 <div class="card">
-  <h2>Android Emulator (Waydroid)</h2>
+  <h2>Android Emulator (Redroid)</h2>
 
   <div class="wd-row">
     <div class="wd-status-group">
@@ -330,16 +330,16 @@
         <span class="value" id="wdContainerText">checking...</span>
       </div>
       <div class="wd-pill">
-        <div class="dot" id="wdSessionDot"></div>
-        <span class="label">Session:</span>
-        <span class="value" id="wdSessionText">checking...</span>
+        <div class="dot" id="wdScrcpyDot"></div>
+        <span class="label">scrcpy:</span>
+        <span class="value" id="wdScrcpyText">checking...</span>
       </div>
     </div>
   </div>
 
   <div class="wd-controls">
-    <button class="btn-wd-start" id="btnWdStart" onclick="waydroidStart()">&#9654; Start Emulator</button>
-    <button class="btn-wd-stop"  id="btnWdStop"  onclick="waydroidStop()">&#9632; Stop Emulator</button>
+    <button class="btn-wd-start" id="btnWdStart" onclick="redroidStart()">&#9654; Start Emulator</button>
+    <button class="btn-wd-stop"  id="btnWdStop"  onclick="redroidStop()">&#9632; Stop Emulator</button>
   </div>
 
   <div class="wd-log" id="wdLog"></div>
@@ -403,32 +403,32 @@
     return str.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
   }
 
-  // ── Waydroid ──────────────────────────────────────────────────────────────
+  // ── Redroid ───────────────────────────────────────────────────────────────
 
-  function applyWaydroidStatus(data) {
+  function applyRedroidStatus(data) {
     const cDot  = document.getElementById("wdContainerDot");
     const cText = document.getElementById("wdContainerText");
-    const sDot  = document.getElementById("wdSessionDot");
-    const sText = document.getElementById("wdSessionText");
+    const sDot  = document.getElementById("wdScrcpyDot");
+    const sText = document.getElementById("wdScrcpyText");
 
     const containerUp = data.container === "running";
-    const sessionUp   = data.session   === "running";
+    const scrcpyUp    = data.scrcpy === true;
 
     cDot.className  = "dot" + (containerUp ? " active" : "");
-    cText.textContent = containerUp ? "running" : "stopped";
+    cText.textContent = data.container || "unknown";
 
-    sDot.className  = "dot" + (sessionUp ? " active" : "");
-    sText.textContent = sessionUp ? "running" : "stopped";
+    sDot.className  = "dot" + (scrcpyUp ? " active" : "");
+    sText.textContent = scrcpyUp ? "running" : "stopped";
 
     document.getElementById("btnWdStart").disabled = containerUp;
     document.getElementById("btnWdStop").disabled  = !containerUp;
   }
 
-  async function pollWaydroid() {
+  async function pollRedroid() {
     try {
-      const res  = await fetch("/api/waydroid/status");
+      const res  = await fetch("/api/redroid/status");
       const data = await res.json();
-      applyWaydroidStatus(data);
+      applyRedroidStatus(data);
     } catch (e) {}
   }
 
@@ -440,55 +440,55 @@
     setTimeout(() => log.classList.remove("visible"), 8000);
   }
 
-  async function waydroidStart() {
+  async function redroidStart() {
     const btn = document.getElementById("btnWdStart");
     btn.innerHTML = '<span class="spinner"></span> Starting...';
     btn.disabled = true;
 
     try {
-      const res  = await fetch("/api/waydroid/start", { method: "POST" });
+      const res  = await fetch("/api/redroid/start", { method: "POST" });
       const data = await res.json();
 
       if (!res.ok) {
-        showToast(data.error || "Failed to start Waydroid", "error");
+        showToast(data.error || "Failed to start Redroid", "error");
         showWdLog(data.messages);
         return;
       }
 
-      showToast("Waydroid started — emulator launching on virtual display", "success");
+      showToast("Redroid started — Android visible on virtual display", "success");
       showWdLog(data.messages);
-      await pollWaydroid();
+      await pollRedroid();
     } catch (e) {
       showToast("Request failed", "error");
     } finally {
       btn.innerHTML = "&#9654; Start Emulator";
-      await pollWaydroid();
+      await pollRedroid();
     }
   }
 
-  async function waydroidStop() {
-    if (!confirm("Stop the Waydroid emulator?")) return;
+  async function redroidStop() {
+    if (!confirm("Stop the Redroid emulator?")) return;
     const btn = document.getElementById("btnWdStop");
     btn.innerHTML = '<span class="spinner"></span> Stopping...';
     btn.disabled = true;
 
     try {
-      const res  = await fetch("/api/waydroid/stop", { method: "POST" });
+      const res  = await fetch("/api/redroid/stop", { method: "POST" });
       const data = await res.json();
 
       if (!res.ok) {
-        showToast(data.error || "Failed to stop Waydroid", "error");
+        showToast(data.error || "Failed to stop Redroid", "error");
         showWdLog(data.messages);
         return;
       }
 
-      showToast("Waydroid stopped", "info");
+      showToast("Redroid stopped", "info");
       showWdLog(data.messages);
     } catch (e) {
       showToast("Request failed", "error");
     } finally {
       btn.innerHTML = "&#9632; Stop Emulator";
-      await pollWaydroid();
+      await pollRedroid();
     }
   }
 
@@ -661,8 +661,8 @@
 
   // ── Init ──────────────────────────────────────────────────────────────────
 
-  pollWaydroid();
-  setInterval(pollWaydroid, 8000);
+  pollRedroid();
+  setInterval(pollRedroid, 8000);
 
   pollStatus();
   setInterval(pollStatus, 5000);
