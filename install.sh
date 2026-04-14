@@ -49,93 +49,37 @@ else
   info "rclone already installed, skipping."
 fi
 
-info "Installing Waydroid dependencies..."
-apt-get install -y \
-  curl python3-pip lzip wget \
-  linux-headers-generic
-
-info "Loading binder kernel module (required for Waydroid)..."
-modprobe binder_linux devices="binder,hwbinder,vndbinder" || warn "binder_linux module not available — Waydroid will not work without it."
-echo 'binder_linux' >> /etc/modules-load.d/waydroid.conf
-
-info "Adding Waydroid repository..."
-curl -s https://repo.waydro.id/waydroid.gpg | gpg --dearmor -o /usr/share/keyrings/waydroid.gpg
-echo "deb [signed-by=/usr/share/keyrings/waydroid.gpg] https://repo.waydro.id/ jammy main" \
-  > /etc/apt/sources.list.d/waydroid.list
-apt-get update -y
-apt-get install -y waydroid
-
-info "Installing lxc-start wrapper shim (LXC 5.0 / Waydroid 1.6.x fix)..."
-# LXC 5.0 broke relative lxc.mount.entry target path resolution — paths are
-# resolved against /usr/lib/x86_64-linux-gnu/lxc/ on the host instead of
-# the container rootfs.  Waydroid regenerates config_nodes AND config_session
-# on every container start, so pre-patching those files does not survive a
-# restart.  The only reliable fix is to intercept lxc-start itself — the
-# single point in the call chain where configs already exist but LXC hasn't
-# read them yet.  The shim patches both files on every invocation then execs
-# the real lxc-start.
-
-LXC_REAL=/usr/bin/lxc-start.real
-LXC_BIN=/usr/bin/lxc-start
-
-if [ ! -f "$LXC_REAL" ]; then
-  mv "$LXC_BIN" "$LXC_REAL"
-  info "Backed up lxc-start → lxc-start.real"
+info "Installing Docker..."
+if ! command -v docker &>/dev/null; then
+  curl -fsSL https://get.docker.com | bash
+  systemctl enable docker
+  systemctl start docker
+else
+  info "Docker already installed, skipping."
 fi
 
-cat > "$LXC_BIN" <<'WRAPPER'
-#!/bin/bash
-# DroidRecord — LXC 5.0 / Waydroid 1.6.x mount-path shim
-# Patches ALL relative lxc.mount.entry targets (tmpfs AND bind mounts) in both
-# config_nodes and config_session to absolute paths inside the container rootfs
-# before forwarding every call to the real lxc-start.
+info "Installing adb and scrcpy..."
+apt-get install -y adb scrcpy
 
-ROOTFS=/var/lib/waydroid/rootfs
-LXC_DIR=/var/lib/waydroid/lxc/waydroid
+info "Pulling Redroid image (Android 13)..."
+docker pull redroid/redroid:13.0.0-latest
 
-patch_config() {
-  local cfg="$1"
-  [ -f "$cfg" ] || return
-  python3 - "$cfg" "$ROOTFS" <<'PYEOF'
-import sys
-
-cfg_path, rootfs = sys.argv[1], sys.argv[2]
-
-lines_out = []
-with open(cfg_path) as f:
-    for line in f:
-        if line.startswith('lxc.mount.entry'):
-            # fields: ['lxc.mount.entry', '=', 'SOURCE', 'TARGET', ...]
-            fields = line.split()
-            if len(fields) >= 4 and fields[2] == 'tmpfs':
-                # LXC 5.0 cannot mount tmpfs via relative target; drop the
-                # line entirely — the container creates these mount points itself
-                continue
-            if len(fields) >= 4 and not fields[3].startswith('/'):
-                fields[3] = rootfs + '/' + fields[3]
-                line = ' '.join(fields) + '\n'
-        lines_out.append(line)
-
-with open(cfg_path, 'w') as f:
-    f.writelines(lines_out)
-PYEOF
-}
-
-patch_config "$LXC_DIR/config_nodes"
-patch_config "$LXC_DIR/config_session"
-
-exec /usr/bin/lxc-start.real "$@"
-WRAPPER
-
-chmod +x "$LXC_BIN"
-info "lxc-start wrapper installed — relative mount paths will be fixed automatically on every container start."
-
-warn "Waydroid installed but NOT initialised — init requires an active display session."
-warn "After install, run manually over SSH:"
-warn "  Step 1: waydroid init -s GAPPS -f"
-warn "  Step 2: systemctl start waydroid-container"
-warn "  Step 3: DISPLAY=:1 waydroid show-full-ui"
-warn "  (The lxc-start wrapper will fix mount paths automatically on start.)"
+info "Creating Redroid container..."
+if docker container inspect redroid &>/dev/null; then
+  info "Redroid container already exists, skipping creation."
+else
+  mkdir -p /data/redroid
+  docker run -itd \
+    --name redroid \
+    --privileged \
+    -v /data/redroid:/data \
+    -p 5555:5555 \
+    redroid/redroid:13.0.0-latest \
+    androidboot.redroid_gpu_mode=guest
+  info "Redroid container created and started."
+  info "Stopping it now — use the DroidRecord UI or 'docker start redroid' to start it."
+  docker stop redroid
+fi
 
 info "Installing Python requirements for DroidRecord..."
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -165,7 +109,7 @@ info "Creating systemd service for DroidRecord (Flask)..."
 cat > /etc/systemd/system/droidrecord.service <<SYSTEMD
 [Unit]
 Description=DroidRecord Flask App
-After=xvfb-openbox.service
+After=xvfb-openbox.service docker.service
 
 [Service]
 WorkingDirectory=$SCRIPT_DIR
@@ -238,9 +182,7 @@ info ""
 info "  Next steps:"
 info "  1. Configure rclone for Google Drive:"
 info "     rclone config   (name the remote: gdrive)"
-info "  2. Initialise Waydroid manually over SSH:"
-info "     waydroid init -s GAPPS -f"
-info "     systemctl start waydroid-container"
-info "     DISPLAY=:1 waydroid show-full-ui"
+info "  2. Start the Android emulator from the web UI"
+info "     (or: docker start redroid)"
 info "  3. Open the recorder UI and start recording."
 info "=============================================="
