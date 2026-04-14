@@ -9,70 +9,12 @@ from flask import Flask, jsonify, render_template, request
 
 app = Flask(__name__)
 
-RECORDINGS_DIR = "/recordings"
-DISPLAY = ":1"
-RESOLUTION = "1280x720"
-FRAMERATE = "30"
-
-WAYDROID_LXC_DIR    = "/var/lib/waydroid/lxc/waydroid"
-WAYDROID_ROOTFS     = "/var/lib/waydroid/rootfs"
-LXC_START_REAL      = "/usr/bin/lxc-start.real"
-LXC_START_WRAPPER   = "/usr/bin/lxc-start"
-
-# Wrapper script installed over /usr/bin/lxc-start.
-# Waydroid regenerates config_nodes + config_session every container start then
-# calls lxc-start.  This wrapper intercepts that call — the only moment where
-# the configs exist but LXC hasn't read them yet — patches all relative mount
-# entry targets to absolute paths inside the container rootfs, then execs the
-# real lxc-start.  Works for both tmpfs and bind mounts; survives Waydroid
-# restarts and upgrades because it runs at the OS syscall boundary.
-LXC_WRAPPER_SCRIPT = r"""#!/bin/bash
-# DroidRecord — LXC 5.0 / Waydroid 1.6.x mount-path shim
-# Intercepts every lxc-start call and rewrites relative mount targets to
-# absolute paths inside the container rootfs before LXC reads the configs.
-
-ROOTFS=/var/lib/waydroid/rootfs
-LXC_DIR=/var/lib/waydroid/lxc/waydroid
-
-patch_config() {
-  local cfg="$1"
-  [ -f "$cfg" ] || return
-
-  # Patch ALL lxc.mount.entry lines whose TARGET (4th whitespace-separated
-  # field: key = source TARGET ...) is a relative path.
-  # Uses field-split in Python rather than a regex to avoid ambiguity with
-  # bind mounts that have an absolute source (/root/.local/share/...) and a
-  # short relative target (data, run/user/0/pulse/native, waydroid0, etc.).
-  python3 - "$cfg" "$ROOTFS" <<'PYEOF'
-import sys
-
-cfg_path, rootfs = sys.argv[1], sys.argv[2]
-
-lines_out = []
-with open(cfg_path) as f:
-    for line in f:
-        if line.startswith('lxc.mount.entry'):
-            # fields: ['lxc.mount.entry', '=', 'SOURCE', 'TARGET', ...]
-            fields = line.split()
-            if len(fields) >= 4 and fields[2] == 'tmpfs':
-                # LXC 5.0 cannot mount tmpfs via relative target; drop the
-                # line entirely — the container creates these mount points itself
-                continue
-            if len(fields) >= 4 and not fields[3].startswith('/'):
-                fields[3] = rootfs + '/' + fields[3]
-                line = ' '.join(fields) + '\n'
-        lines_out.append(line)
-
-with open(cfg_path, 'w') as f:
-    f.writelines(lines_out)
-PYEOF
-}
-
-patch_config "$LXC_DIR/config_nodes"
-patch_config "$LXC_DIR/config_session"
-
-exec /usr/bin/lxc-start.real "$@"
-"""
+RECORDINGS_DIR     = "/recordings"
+DISPLAY            = ":1"
+RESOLUTION         = "1280x720"
+FRAMERATE          = "30"
+REDROID_CONTAINER  = "redroid"
+REDROID_ADB_SERIAL = "localhost:5555"
 
 os.makedirs(RECORDINGS_DIR, exist_ok=True)
 
@@ -99,134 +41,27 @@ def get_elapsed():
         return int(time.time() - state["start_time"] + state["elapsed_paused"])
 
 
-def _install_lxc_wrapper():
-    """
-    Install a shim over /usr/bin/lxc-start that fixes LXC 5.0 / Waydroid 1.6.x
-    mount-path resolution on every container start.
-
-    Why a wrapper and not a config patch:
-      Waydroid regenerates config_nodes and config_session fresh on every
-      waydroid-container start, so any pre-patch is immediately overwritten.
-      The wrapper intercepts lxc-start — called by Waydroid after config
-      generation — rewrites all relative lxc.mount.entry targets to absolute
-      paths inside the container rootfs, then execs the real lxc-start.
-      This covers both config files, both tmpfs and bind mounts, and survives
-      Waydroid upgrades automatically.
-
-    Idempotent: safe to call on every Start click.
-    """
-    already = os.path.exists(LXC_START_REAL)
-    msgs = []
-
-    try:
-        if not already:
-            # Back up the real lxc-start
-            os.rename(LXC_START_WRAPPER, LXC_START_REAL)
-            msgs.append(f"Backed up lxc-start → lxc-start.real")
-
-        # (Re)write the wrapper — idempotent
-        with open(LXC_START_WRAPPER, "w") as f:
-            f.write(LXC_WRAPPER_SCRIPT)
-        os.chmod(LXC_START_WRAPPER, 0o755)
-        msgs.append("lxc-start wrapper installed (LXC 5.0 mount-path shim)")
-        return True, msgs
-
-    except Exception as e:
-        # If we already moved the real binary but writing the wrapper failed,
-        # restore it so the system isn't broken
-        if not already and os.path.exists(LXC_START_REAL) and not os.path.exists(LXC_START_WRAPPER):
-            try:
-                os.rename(LXC_START_REAL, LXC_START_WRAPPER)
-            except Exception:
-                pass
-        return False, [str(e)]
-
-
-def _waydroid_pre_start():
-    """
-    Create host-side resources that must exist before the LXC container starts.
-
-    1.  /run/user/0/pulse/  — PulseAudio socket directory.
-        config_session binds /run/user/0/pulse/native into the container.
-        With the lxc-start wrapper the target is now absolute, so LXC needs
-        the host source path to exist (even as an empty dir) before attempting
-        the bind mount; otherwise it aborts.  The socket itself is optional
-        (bind,optional in config_session) so the container starts fine without
-        an active PulseAudio daemon — audio simply won't work.
-
-    2.  waydroid0 network bridge — Waydroid uses this bridge for container
-        networking.  If it doesn't exist before lxc-start, the container
-        network setup fails.  We replicate what `waydroid-net` / ip commands
-        would do: create a bridge, assign 192.168.250.1/24, bring it up.
-    """
-    msgs = []
-
-    # --- PulseAudio socket directory ---
-    pulse_dir = "/run/user/0/pulse"
-    try:
-        os.makedirs(pulse_dir, mode=0o700, exist_ok=True)
-        msgs.append(f"Ensured {pulse_dir} exists")
-    except Exception as e:
-        msgs.append(f"Warning: could not create {pulse_dir}: {e}")
-
-    # --- waydroid0 bridge ---
-    try:
-        chk = subprocess.run(
-            ["ip", "link", "show", "waydroid0"],
-            capture_output=True, text=True
-        )
-        if chk.returncode != 0:
-            # Bridge doesn't exist — create it
-            for cmd in [
-                ["ip", "link", "add", "waydroid0", "type", "bridge"],
-                ["ip", "addr", "add", "192.168.250.1/24", "dev", "waydroid0"],
-                ["ip", "link", "set", "waydroid0", "up"],
-            ]:
-                r = subprocess.run(cmd, capture_output=True, text=True)
-                if r.returncode != 0:
-                    msgs.append(f"Warning: {' '.join(cmd)}: {r.stderr.strip()}")
-                    break
-            else:
-                msgs.append("waydroid0 bridge created (192.168.250.1/24)")
-        else:
-            # Ensure it's up
-            subprocess.run(["ip", "link", "set", "waydroid0", "up"],
-                           capture_output=True)
-            msgs.append("waydroid0 bridge already present — brought up")
-    except Exception as e:
-        msgs.append(f"Warning: waydroid0 bridge setup failed: {e}")
-
-    return msgs
-
-
-def _waydroid_status():
-    """Return a dict with waydroid container/session status."""
-    container = "stopped"
-    session = "stopped"
+def _redroid_status():
+    """Return dict with redroid container status and scrcpy running flag."""
+    container = "unknown"
+    scrcpy_running = False
 
     try:
         r = subprocess.run(
-            ["systemctl", "is-active", "waydroid-container"],
+            ["docker", "inspect", "--format", "{{.State.Status}}", REDROID_CONTAINER],
             capture_output=True, text=True, timeout=5
         )
-        if r.stdout.strip() == "active":
-            container = "running"
+        container = r.stdout.strip() if r.returncode == 0 else "not found"
     except Exception:
-        pass
+        container = "unknown"
 
     try:
-        r = subprocess.run(
-            ["waydroid", "status"],
-            capture_output=True, text=True, timeout=5
-        )
-        if "Session:\tRUNNING" in r.stdout:
-            session = "running"
-        elif "Session:\tSTOPPED" in r.stdout:
-            session = "stopped"
+        r = subprocess.run(["pgrep", "-x", "scrcpy"], capture_output=True, timeout=3)
+        scrcpy_running = r.returncode == 0
     except Exception:
         pass
 
-    return {"container": container, "session": session}
+    return {"container": container, "scrcpy": scrcpy_running}
 
 
 @app.route("/")
@@ -434,96 +269,84 @@ def api_delete(filename):
 
 
 # ---------------------------------------------------------------------------
-# Waydroid control endpoints
+# Redroid (Android in Docker) control endpoints
 # ---------------------------------------------------------------------------
 
-@app.route("/api/waydroid/status")
-def api_waydroid_status():
-    return jsonify(_waydroid_status())
+@app.route("/api/redroid/status")
+def api_redroid_status():
+    return jsonify(_redroid_status())
 
 
-@app.route("/api/waydroid/start", methods=["POST"])
-def api_waydroid_start():
+@app.route("/api/redroid/start", methods=["POST"])
+def api_redroid_start():
     messages = []
 
-    # Step 1: install the lxc-start wrapper shim (idempotent)
-    # The wrapper intercepts every lxc-start call Waydroid makes, patches
-    # both config_nodes and config_session to absolute paths after Waydroid
-    # writes them, then forwards to the real lxc-start.  This is the only
-    # reliable fix because Waydroid regenerates both files on every start.
-    ok, shim_msgs = _install_lxc_wrapper()
-    messages.extend(shim_msgs)
-    if not ok:
-        return jsonify({"error": shim_msgs[-1], "messages": messages}), 500
-
-    # Step 2: create host resources LXC needs before container start
-    # - /run/user/0/pulse/  (PulseAudio bind-mount source must exist)
-    # - waydroid0 bridge    (container networking)
-    pre_msgs = _waydroid_pre_start()
-    messages.extend(pre_msgs)
-
-    # Step 3: start the container service
+    # Step 1: start the Docker container
     try:
         r = subprocess.run(
-            ["systemctl", "start", "waydroid-container"],
+            ["docker", "start", REDROID_CONTAINER],
             capture_output=True, text=True, timeout=30
         )
         if r.returncode != 0:
-            err = (r.stderr.strip() or r.stdout.strip() or
-                   "Failed to start waydroid-container")
+            err = r.stderr.strip() or r.stdout.strip() or "docker start failed"
             messages.append(err)
             return jsonify({"error": err, "messages": messages}), 500
-        messages.append("waydroid-container started")
+        messages.append(f"Container '{REDROID_CONTAINER}' started")
     except subprocess.TimeoutExpired:
-        return jsonify({
-            "error": "Timed out starting waydroid-container",
-            "messages": messages
-        }), 500
+        return jsonify({"error": "Timed out starting redroid container", "messages": messages}), 500
     except Exception as e:
         return jsonify({"error": str(e), "messages": messages}), 500
 
-    # Step 3: launch the Waydroid UI on the virtual display
+    # Step 2: wait for ADB in the container then connect
+    time.sleep(3)
+    try:
+        r = subprocess.run(
+            ["adb", "connect", REDROID_ADB_SERIAL],
+            capture_output=True, text=True, timeout=15
+        )
+        messages.append(f"adb: {(r.stdout.strip() or r.stderr.strip()) or 'connected'}")
+    except Exception as e:
+        messages.append(f"Warning: adb connect failed: {e}")
+
+    # Step 3: launch scrcpy on the virtual display
     try:
         subprocess.Popen(
-            ["waydroid", "show-full-ui"],
+            ["scrcpy", "--serial", REDROID_ADB_SERIAL, "--no-audio"],
             env={**os.environ, "DISPLAY": DISPLAY},
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        messages.append("waydroid show-full-ui launched on DISPLAY=" + DISPLAY)
+        messages.append(f"scrcpy launched on DISPLAY={DISPLAY}")
     except Exception as e:
-        messages.append(f"Warning: could not launch UI: {e}")
+        messages.append(f"Warning: scrcpy launch failed: {e}")
 
     return jsonify({"status": "started", "messages": messages})
 
 
-@app.route("/api/waydroid/stop", methods=["POST"])
-def api_waydroid_stop():
+@app.route("/api/redroid/stop", methods=["POST"])
+def api_redroid_stop():
     messages = []
 
-    # Terminate the session first
+    # Step 1: kill scrcpy
     try:
-        subprocess.run(
-            ["waydroid", "session", "stop"],
-            capture_output=True, text=True, timeout=15
-        )
-        messages.append("waydroid session stopped")
+        r = subprocess.run(["pkill", "scrcpy"], capture_output=True, text=True)
+        messages.append("scrcpy killed" if r.returncode == 0 else "scrcpy was not running")
     except Exception as e:
-        messages.append(f"session stop warning: {e}")
+        messages.append(f"Warning: pkill scrcpy: {e}")
 
-    # Stop the container service
+    # Step 2: stop the container
     try:
         r = subprocess.run(
-            ["systemctl", "stop", "waydroid-container"],
-            capture_output=True, text=True, timeout=20
+            ["docker", "stop", REDROID_CONTAINER],
+            capture_output=True, text=True, timeout=30
         )
         if r.returncode != 0:
-            err = r.stderr.strip() or "Failed to stop waydroid-container"
+            err = r.stderr.strip() or "docker stop failed"
             messages.append(err)
             return jsonify({"error": err, "messages": messages}), 500
-        messages.append("waydroid-container stopped")
+        messages.append(f"Container '{REDROID_CONTAINER}' stopped")
     except subprocess.TimeoutExpired:
-        return jsonify({"error": "Timed out stopping waydroid-container", "messages": messages}), 500
+        return jsonify({"error": "Timed out stopping redroid", "messages": messages}), 500
     except Exception as e:
         return jsonify({"error": str(e), "messages": messages}), 500
 
