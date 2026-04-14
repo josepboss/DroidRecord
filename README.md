@@ -1,6 +1,6 @@
 # DroidRecord
 
-A self-hosted VPS screen recorder with a web UI. Records your virtual display (Xvfb :1), manages saved recordings, and uploads them to Google Drive via rclone.
+A self-hosted VPS screen recorder with a web UI. Records your virtual display (Xvfb :1), manages saved recordings, and uploads them to Google Drive via rclone. Runs a full Android 13 emulator via Redroid (Android in Docker), visible through scrcpy on the virtual display.
 
 ---
 
@@ -12,7 +12,7 @@ A self-hosted VPS screen recorder with a web UI. Records your virtual display (X
 - **Window manager:** Openbox
 - **Remote viewer:** noVNC + x11vnc
 - **Uploads:** rclone → Google Drive
-- **Android (optional):** Waydroid + GApps
+- **Android (optional):** Redroid (Android in Docker) + scrcpy
 
 ---
 
@@ -21,6 +21,7 @@ A self-hosted VPS screen recorder with a web UI. Records your virtual display (X
 - Ubuntu 22.04 VPS (root access)
 - Port 6080 open (web UI)
 - Port 6081 open (noVNC viewer, optional)
+- Kernel with `binder` support (standard Ubuntu 22.04 HWE kernel works)
 
 ---
 
@@ -32,7 +33,7 @@ cd DroidRecord
 sudo bash install.sh
 ```
 
-The script installs and starts everything automatically, including systemd services.
+The script installs and starts everything automatically, including systemd services, Docker, adb, scrcpy, and creates the Redroid container.
 
 ---
 
@@ -44,120 +45,56 @@ The script installs and starts everything automatically, including systemd servi
 sudo apt-get update -y
 sudo apt-get install -y \
   xvfb openbox ffmpeg python3 python3-pip \
-  novnc websockify x11vnc
+  novnc websockify x11vnc adb scrcpy
 ```
 
-### 2. Install rclone
+### 2. Install Docker
+
+```bash
+curl -fsSL https://get.docker.com | sudo bash
+sudo systemctl enable --now docker
+```
+
+### 3. Install rclone
 
 ```bash
 curl https://rclone.org/install.sh | sudo bash
 ```
 
-### 3. Install Waydroid + GApps (optional)
+### 4. Set up Redroid (Android 13 in Docker)
 
-Install the package:
-
-```bash
-# Load binder kernel module (required — Waydroid will not start without it)
-sudo modprobe binder_linux devices="binder,hwbinder,vndbinder"
-echo 'binder_linux' | sudo tee /etc/modules-load.d/waydroid.conf
-
-curl -s https://repo.waydro.id/waydroid.gpg | sudo gpg --dearmor \
-  -o /usr/share/keyrings/waydroid.gpg
-echo "deb [signed-by=/usr/share/keyrings/waydroid.gpg] \
-  https://repo.waydro.id/ jammy main" | \
-  sudo tee /etc/apt/sources.list.d/waydroid.list
-sudo apt-get update && sudo apt-get install -y waydroid
-```
-
-> **Do not run `waydroid init` from the install script or a non-interactive session.** It downloads system images and requires a working display context. Run the steps below manually over SSH after the system is up:
-
-**Step 1 — initialise images:**
+Pull the image and create the container:
 
 ```bash
-waydroid init -s GAPPS -f
+docker pull redroid/redroid:13.0.0-latest
+
+sudo mkdir -p /data/redroid
+
+docker run -itd \
+  --name redroid \
+  --privileged \
+  -v /data/redroid:/data \
+  -p 5555:5555 \
+  redroid/redroid:13.0.0-latest \
+  androidboot.redroid_gpu_mode=guest
 ```
 
-**Step 2 — the lxc-start wrapper handles the LXC 5.0 fix automatically**
+`androidboot.redroid_gpu_mode=guest` uses software rendering — required on VPS without GPU passthrough.
 
-`install.sh` installs a shim over `/usr/bin/lxc-start` that fixes this transparently on every container start. No manual config patching is needed.
+The container persists across reboots. Use `docker start redroid` / `docker stop redroid` to control it, or use the **Start / Stop Emulator** buttons in the DroidRecord web UI.
 
-**Why the old config-patch approach does not work:**
-
-LXC 5.0 resolves relative `lxc.mount.entry` target paths against `/usr/lib/x86_64-linux-gnu/lxc/` on the host instead of the container rootfs — causing `Failed to create directory "/usr/lib/x86_64-linux-gnu/lxc/dev"` errors. The affected files are both `config_nodes` **and** `config_session`. Critically, **Waydroid regenerates both files on every container start**, so any pre-patch is immediately overwritten. Patching after the fact never runs at the right moment.
-
-**The wrapper approach:**
-
-`install.sh` backs up the real `lxc-start` to `lxc-start.real` and replaces it with a bash shim. The shim is the only point in the call chain where Waydroid has already written the configs but LXC hasn't read them yet:
-
-```
-Waydroid writes config_nodes + config_session
-        ↓
-/usr/bin/lxc-start (shim) — patches both files, then:
-        ↓
-/usr/bin/lxc-start.real — reads the now-correct config
-```
-
-The shim uses Python to rewrite every `lxc.mount.entry` line whose target is a relative path, prefixing it with `/var/lib/waydroid/rootfs`. It covers all fstypes (tmpfs, bind, ext4), both config files, and runs on every restart automatically.
-
-If `install.sh` was not run and you need to install the shim manually:
+**To display Android on the virtual screen** (what gets recorded):
 
 ```bash
-sudo mv /usr/bin/lxc-start /usr/bin/lxc-start.real
-
-sudo tee /usr/bin/lxc-start <<'EOF'
-#!/bin/bash
-ROOTFS=/var/lib/waydroid/rootfs
-LXC_DIR=/var/lib/waydroid/lxc/waydroid
-patch_config() {
-  local cfg="$1"; [ -f "$cfg" ] || return
-  python3 - "$cfg" "$ROOTFS" <<'PYEOF'
-import sys
-cfg_path, rootfs = sys.argv[1], sys.argv[2]
-lines_out = []
-with open(cfg_path) as f:
-    for line in f:
-        if line.startswith('lxc.mount.entry'):
-            fields = line.split()
-            if len(fields) >= 4 and fields[2] == 'tmpfs':
-                continue  # drop tmpfs entries entirely — LXC 5.0 can't handle them
-            if len(fields) >= 4 and not fields[3].startswith('/'):
-                fields[3] = rootfs + '/' + fields[3]
-                line = ' '.join(fields) + '\n'
-        lines_out.append(line)
-with open(cfg_path, 'w') as f:
-    f.writelines(lines_out)
-PYEOF
-}
-patch_config "$LXC_DIR/config_nodes"
-patch_config "$LXC_DIR/config_session"
-exec /usr/bin/lxc-start.real "$@"
-EOF
-
-sudo chmod +x /usr/bin/lxc-start
+docker start redroid
+sleep 3
+adb connect localhost:5555
+DISPLAY=:1 scrcpy --serial localhost:5555 --no-audio
 ```
 
-**Step 3 — pre-start requirements and display:**
+The DroidRecord UI does all of this automatically when you click **Start Emulator**.
 
-Two host-side resources must exist before `lxc-start` runs — the DroidRecord UI and `install.sh` both handle these automatically, but if you're starting manually:
-
-```bash
-# PulseAudio socket directory (source for bind mount in config_session)
-mkdir -p /run/user/0/pulse
-
-# waydroid0 network bridge (required for container networking)
-ip link show waydroid0 2>/dev/null || (
-  ip link add waydroid0 type bridge &&
-  ip addr add 192.168.250.1/24 dev waydroid0 &&
-  ip link set waydroid0 up
-)
-
-# Now start the container and show the UI
-systemctl start waydroid-container
-DISPLAY=:1 waydroid show-full-ui
-```
-
-### 4. Configure rclone for Google Drive
+### 5. Configure rclone for Google Drive
 
 ```bash
 rclone config
@@ -170,18 +107,11 @@ When prompted:
 
 DroidRecord will upload recordings to a folder called `DroidRecord/` in your Drive root.
 
-### 5. Start the virtual display
+### 6. Start the virtual display
 
 ```bash
 Xvfb :1 -screen 0 1280x720x24 &
 DISPLAY=:1 openbox --sm-disable &
-```
-
-### 6. Start Waydroid session (optional)
-
-```bash
-waydroid session start &
-DISPLAY=:1 waydroid show-full-ui &
 ```
 
 ### 7. Install Python dependencies
@@ -242,11 +172,28 @@ sudo systemctl restart droidrecord
 sudo journalctl -u droidrecord -f
 ```
 
+The Redroid container is managed by Docker, not systemd. To auto-start it on boot:
+
+```bash
+docker update --restart unless-stopped redroid
+```
+
 ---
 
 ## Usage
 
 ### Web UI — http://\<ip\>:6080
+
+**Android Emulator panel:**
+
+| Button | Action |
+|---|---|
+| Start Emulator | `docker start redroid` → `adb connect` → launches `scrcpy` on the virtual display |
+| Stop Emulator | Kills `scrcpy` → `docker stop redroid` |
+
+Status pills show the Docker container state and whether scrcpy is running.
+
+**Recording panel:**
 
 | Button | Action |
 |---|---|
@@ -276,6 +223,8 @@ Edit `app.py` to change:
 | `RESOLUTION` | `1280x720` | Recording resolution |
 | `FRAMERATE` | `30` | Frames per second |
 | `RECORDINGS_DIR` | `/recordings` | Where files are saved |
+| `REDROID_CONTAINER` | `redroid` | Docker container name |
+| `REDROID_ADB_SERIAL` | `localhost:5555` | ADB address for scrcpy |
 
 ---
 
@@ -289,51 +238,22 @@ Edit `app.py` to change:
 - Run `rclone listremotes` — you should see `gdrive:`
 - Test manually: `rclone lsd gdrive:`
 
-**Waydroid not showing**
-- Start the session: `waydroid session start`
-- Show the UI: `DISPLAY=:1 waydroid show-full-ui`
-- Check kernel modules: `lsmod | grep binder`
+**Redroid container fails to start**
+- Check Docker is running: `systemctl status docker`
+- Check the container exists: `docker ps -a | grep redroid`
+- View container logs: `docker logs redroid`
+- Recreate if needed: `docker rm redroid` then re-run the `docker run` command from the setup section
 
-**Waydroid container fails — `Failed to create directory "/usr/lib/x86_64-linux-gnu/lxc/..."` or `Failed to mount "tmpfs"` (LXC 5.0 bug)**
+**scrcpy cannot connect**
+- Ensure the container is running: `docker ps | grep redroid`
+- Connect ADB manually: `adb connect localhost:5555`
+- Verify ADB sees the device: `adb devices`
+- Run scrcpy manually: `DISPLAY=:1 scrcpy --serial localhost:5555 --no-audio`
+- Android may need a few seconds after container start before ADB is ready — wait 3–5 seconds then try again
 
-LXC 5.0 resolves relative `lxc.mount.entry` target paths against the host LXC library dir instead of the container rootfs. Waydroid regenerates both `config_nodes` and `config_session` on every container start, so patching the files directly never survives a restart.
-
-The correct fix is the **lxc-start wrapper** installed by `install.sh`. Check whether it is in place:
-
-```bash
-head -1 /usr/bin/lxc-start
-# Should print: #!/bin/bash
-# If it prints ELF or nothing, the wrapper is not installed.
-```
-
-If the wrapper is missing (e.g. on a system that didn't use `install.sh`), install it manually — see the Waydroid section of this README for the one-paste install command.
-
-If the wrapper is present but the container still fails, check the patched config right after a failed start:
-
-```bash
-grep 'lxc.mount.entry' /var/lib/waydroid/lxc/waydroid/config_nodes | head -5
-# All targets should start with /var/lib/waydroid/rootfs/...
-```
-
-If targets are still relative, the wrapper may have failed silently — check that `python3` is available at `/usr/bin/python3` and that the wrapper is executable (`ls -la /usr/bin/lxc-start`).
-
-**Waydroid: data/pulse bind mount source missing or waydroid0 bridge missing**
-
-Even after the wrapper fixes the target paths to absolute, the *source* paths for bind mounts must exist on the host before `lxc-start` runs. Two required resources:
-
-```bash
-# PulseAudio socket directory — must exist (socket itself is optional)
-ls /run/user/0/pulse || mkdir -p /run/user/0/pulse
-
-# waydroid0 bridge — required for container networking
-ip link show waydroid0 || (
-  ip link add waydroid0 type bridge &&
-  ip addr add 192.168.250.1/24 dev waydroid0 &&
-  ip link set waydroid0 up
-)
-```
-
-The DroidRecord UI (Start Emulator button) and `install.sh` both create these automatically. If you bypassed both, create them manually before `systemctl start waydroid-container`.
+**Android screen black / scrcpy connects but shows nothing**
+- The container may still be booting — wait 10–15 seconds after `docker start`
+- Check container logs: `docker logs redroid --tail 20`
 
 **Port 6080 not reachable**
 - Check firewall: `sudo ufw allow 6080/tcp`
